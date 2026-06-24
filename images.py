@@ -22,8 +22,10 @@ pull image or platform deps it will not use.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -48,9 +50,35 @@ ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # supported versions (format: YYYYMM).
 LINKEDIN_API_VERSION = "202506"
 
+# Instagram content publishing uses the Meta Graph API with Instagram Login.
+INSTAGRAM_API_BASE = "https://graph.instagram.com/v23.0"
+
+# TikTok Content Posting API base.
+TIKTOK_API_BASE = "https://open.tiktokapis.com/v2"
+
+# --- Video --------------------------------------------------------------------
+# Bluesky is the binding constraint again: it caps video at 100,000,000 bytes and
+# 180 seconds and requires H.264 MP4. We target just under that so one prepared
+# file passes everywhere (Threads <1GB/5min, Mastodon instance-set, X, etc.).
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
+VIDEO_SAFE_MAX_BYTES = 95_000_000
+VIDEO_MAX_SECONDS = 180
+
+# ffmpeg transcode ladder: (longest-side px, H.264 CRF). Sharpest/largest first;
+# we step down until the re-encoded file fits VIDEO_SAFE_MAX_BYTES.
+VIDEO_SHRINK_LADDER = ((1080, 23), (720, 26), (720, 30), (480, 32))
+
 
 class ImageTooLargeError(Exception):
     """Raised when an image cannot be made small enough for the strictest platform."""
+
+
+class VideoTooLargeError(Exception):
+    """Raised when a video cannot be transcoded under the strictest byte cap."""
+
+
+class VideoTooLongError(Exception):
+    """Raised when a video exceeds the strictest duration cap (we never auto-trim)."""
 
 
 @dataclass
@@ -91,7 +119,7 @@ def resolve_image_path(post_path: Path, image_field: str) -> Path:
     candidate = (post_path.parent / image_field).expanduser().resolve()
     if not candidate.is_file():
         raise FileNotFoundError(
-            f"Post references image '{image_field}' but no file exists at {candidate}"
+            f"Post references '{image_field}' but no file exists at {candidate}"
         )
     return candidate
 
@@ -180,6 +208,122 @@ def prepare_image(path: Path) -> Path:
         f"{path.name} is still over {SAFE_MAX_BYTES} bytes after shrinking to "
         f"{SHRINK_LADDER[-1]}px and re-encoding to JPEG q{JPEG_QUALITY_LADDER[-1]}. "
         "Crop it or replace it before publishing."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Step 2b: validate and size a VIDEO (the same auto-shrink discipline, via ffmpeg)
+# --------------------------------------------------------------------------- #
+
+
+def _ensure_ffmpeg() -> None:
+    """Fail early with an install hint if the ffmpeg toolchain is missing."""
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise RuntimeError(
+            "ffmpeg/ffprobe not found, which video posting needs. Install it "
+            "(macOS: `brew install ffmpeg`; Debian/Ubuntu: `apt install ffmpeg`)."
+        )
+
+
+def _ffprobe(path: Path) -> dict:
+    """Return {duration, width, height, vcodec, acodec, size} for a video file."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json",
+         "-show_format", "-show_streams", str(path)],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    data = json.loads(out)
+    streams = data.get("streams", [])
+    v = next((s for s in streams if s.get("codec_type") == "video"), {})
+    a = next((s for s in streams if s.get("codec_type") == "audio"), {})
+    duration = float(data.get("format", {}).get("duration", 0) or 0)
+    return {
+        "duration": duration,
+        "width": int(v.get("width", 0) or 0),
+        "height": int(v.get("height", 0) or 0),
+        "vcodec": v.get("codec_name", ""),
+        "acodec": a.get("codec_name", ""),
+        "size": path.stat().st_size,
+    }
+
+
+def _transcode_video(src: Path, max_side: int, crf: int) -> Path:
+    """
+    Re-encode to H.264/AAC MP4 with the longest side capped at max_side (never
+    upscaled), `+faststart` for streaming, writing a new `.mp4` sibling.
+
+    The scale filter caps each dimension with min(), so a video already smaller
+    than max_side is left at its native size; force_divisible_by=2 keeps even
+    dimensions, which H.264 requires.
+    """
+    out = src.with_name(f"{src.stem}-x{max_side}.mp4")
+    if out == src:
+        out = src.with_name(f"{src.stem}-x{max_side}-c.mp4")
+    vf = (
+        f"scale=w=min(iw\\,{max_side}):h=min(ih\\,{max_side})"
+        ":force_original_aspect_ratio=decrease:force_divisible_by=2"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(src),
+         "-vf", vf,
+         "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+         "-c:a", "aac", "-b:a", "128k",
+         "-movflags", "+faststart",
+         str(out)],
+        check=True, capture_output=True,
+    )
+    return out
+
+
+def prepare_video(path: Path) -> Path:
+    """
+    Validate a video and ensure it is H.264/AAC MP4 under VIDEO_SAFE_MAX_BYTES so
+    every platform accepts it. Returns the ready-to-upload path (a new `.mp4`
+    sibling when a transcode was needed).
+
+    Policy mirrors prepare_image():
+      1. Duration over VIDEO_MAX_SECONDS is a hard error - trimming would change
+         the content, which is the human's call, not ours.
+      2. An MP4 that is already H.264/AAC and under the byte cap passes through.
+      3. Otherwise transcode down VIDEO_SHRINK_LADDER (scale + CRF), returning the
+         first rung that fits. This also normalizes non-H.264 sources (.mov/HEVC,
+         .webm) that Threads/Instagram/TikTok would otherwise reject.
+      4. Give up with VideoTooLargeError only if even the smallest rung is over.
+    """
+    if path.suffix.lower() not in VIDEO_SUFFIXES:
+        raise ValueError(
+            f"Unsupported video type {path.suffix!r}. Allowed: {sorted(VIDEO_SUFFIXES)}"
+        )
+    _ensure_ffmpeg()
+    info = _ffprobe(path)
+    if info["duration"] > VIDEO_MAX_SECONDS + 0.5:
+        raise VideoTooLongError(
+            f"{path.name} is {info['duration']:.0f}s; the cap is {VIDEO_MAX_SECONDS}s "
+            "(Bluesky's limit, the tightest). Trim it before publishing."
+        )
+
+    already_ok = (
+        path.suffix.lower() == ".mp4"
+        and info["vcodec"] == "h264"
+        and info["acodec"] in ("aac", "")  # "" = silent video, no audio stream
+        and info["size"] <= VIDEO_SAFE_MAX_BYTES
+    )
+    if already_ok:
+        return path
+
+    for max_side, crf in VIDEO_SHRINK_LADDER:
+        out = _transcode_video(path, max_side, crf)
+        if out.stat().st_size <= VIDEO_SAFE_MAX_BYTES:
+            return out
+        try:  # this rung is still too big; reclaim the disk before the next try
+            out.unlink()
+        except OSError:
+            pass
+
+    raise VideoTooLargeError(
+        f"{path.name} is still over {VIDEO_SAFE_MAX_BYTES} bytes after transcoding to "
+        f"{VIDEO_SHRINK_LADDER[-1][0]}px / CRF {VIDEO_SHRINK_LADDER[-1][1]}. "
+        "Trim or compress it before publishing."
     )
 
 
@@ -389,6 +533,329 @@ def register_linkedin_image(
 
 
 # --------------------------------------------------------------------------- #
+# Step 4b: per-platform VIDEO helpers (parallel to the image helpers above)
+# --------------------------------------------------------------------------- #
+# Bluesky video is a one-liner in publish.py (atproto's client.send_video reads
+# the bytes, uploads to video.bsky.app, polls processing, and posts), so it needs
+# no helper here. The rest mirror their image counterparts.
+
+
+def upload_mastodon_video(client, video_path: Path, alt: str) -> str:
+    """
+    Upload a video to Mastodon and return its media id for `status_post`.
+
+    Mastodon transcodes video server-side and returns 202, so we poll the media
+    endpoint longer than for images before the status can attach it.
+    """
+    media = client.media_post(str(video_path), description=alt or None)
+    media_id = media["id"]
+    for _ in range(60):
+        if client.media(media_id).get("url"):
+            break
+        time.sleep(3)
+    return media_id
+
+
+def post_threads_video(
+    user_id: str,
+    access_token: str,
+    text: str,
+    video_url: str,
+    *,
+    base_url: str = "https://graph.threads.net/v1.0",
+) -> str:
+    """
+    Post a single-video Thread: create a VIDEO container from the PUBLIC url, wait
+    for it to finish processing, then publish it. Returns the post id.
+
+    `video_url` MUST be publicly reachable over HTTPS - Meta fetches it server
+    side. Video containers take longer than images, so the poll budget is bigger.
+    """
+    import requests  # lazy
+
+    create = requests.post(
+        f"{base_url}/{user_id}/threads",
+        params={
+            "media_type": "VIDEO",
+            "video_url": video_url,
+            "text": text,
+            "access_token": access_token,
+        },
+        timeout=30,
+    )
+    create.raise_for_status()
+    creation_id = create.json()["id"]
+
+    for _ in range(60):
+        status = requests.get(
+            f"{base_url}/{creation_id}",
+            params={"fields": "status", "access_token": access_token},
+            timeout=30,
+        ).json().get("status")
+        if status == "FINISHED":
+            break
+        if status in {"ERROR", "EXPIRED"}:
+            raise RuntimeError(f"Threads video container {status}: check the video URL/format")
+        time.sleep(5)
+
+    publish = requests.post(
+        f"{base_url}/{user_id}/threads_publish",
+        params={"creation_id": creation_id, "access_token": access_token},
+        timeout=30,
+    )
+    publish.raise_for_status()
+    return publish.json()["id"]
+
+
+def register_linkedin_video(
+    access_token: str,
+    owner_urn: str,
+    video_path: Path,
+    *,
+    version: str = LINKEDIN_API_VERSION,
+) -> str:
+    """
+    Register and upload a video via LinkedIn's Videos API. Returns the video URN
+    (e.g. `urn:li:video:...`) for use in the post body's `content.media.id`.
+
+    Three steps: initializeUpload (declares fileSizeBytes, returns an upload token
+    plus one or more byte-range upload URLs), PUT each byte range and collect its
+    ETag, then finalizeUpload with the ordered ETags. LinkedIn finishes processing
+    the video asynchronously after finalize; the post can reference it immediately.
+    """
+    import requests  # lazy
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "LinkedIn-Version": version,
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+    data = video_path.read_bytes()
+
+    init = requests.post(
+        "https://api.linkedin.com/rest/videos?action=initializeUpload",
+        headers={**headers, "Content-Type": "application/json"},
+        json={
+            "initializeUploadRequest": {
+                "owner": owner_urn,
+                "fileSizeBytes": len(data),
+                "uploadCaptions": False,
+                "uploadThumbnail": False,
+            }
+        },
+        timeout=30,
+    )
+    init.raise_for_status()
+    value = init.json()["value"]
+    video_urn = value["video"]
+    upload_token = value.get("uploadToken", "")
+
+    etags: list[str] = []
+    for ins in value["uploadInstructions"]:
+        first, last = int(ins["firstByte"]), int(ins["lastByte"])
+        put = requests.put(
+            ins["uploadUrl"],
+            headers={"Authorization": f"Bearer {access_token}",
+                     "Content-Type": "application/octet-stream"},
+            data=data[first : last + 1],
+            timeout=300,
+        )
+        put.raise_for_status()
+        etag = put.headers.get("ETag") or put.headers.get("etag", "")
+        etags.append(etag.strip('"'))
+
+    fin = requests.post(
+        "https://api.linkedin.com/rest/videos?action=finalizeUpload",
+        headers={**headers, "Content-Type": "application/json"},
+        json={
+            "finalizeUploadRequest": {
+                "video": video_urn,
+                "uploadToken": upload_token,
+                "uploadedPartIds": etags,
+            }
+        },
+        timeout=30,
+    )
+    fin.raise_for_status()
+    return video_urn
+
+
+def upload_x_video(
+    api_key: str,
+    api_secret: str,
+    access_token: str,
+    access_secret: str,
+    video_path: Path,
+    alt: str,
+) -> str:
+    """
+    Upload a video to X and return its media id string for `create_tweet`.
+
+    Video goes through the v1.1 chunked upload (INIT/APPEND/FINALIZE); tweepy's
+    `media_upload(chunked=True, media_category="tweet_video")` runs all three
+    steps and, with wait_for_async_finalize, blocks until X finishes transcoding.
+    Alt text on video is best-effort, so a failure there does not fail the post.
+    """
+    import tweepy  # lazy
+
+    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_secret)
+    api = tweepy.API(auth)
+    media = api.media_upload(
+        filename=str(video_path),
+        chunked=True,
+        media_category="tweet_video",
+        wait_for_async_finalize=True,
+    )
+    if alt:
+        try:
+            api.create_media_metadata(media.media_id, alt)
+        except Exception:
+            pass
+    return media.media_id_string
+
+
+# --------------------------------------------------------------------------- #
+# Step 4c: Instagram + TikTok posters (both fetch media from the PUBLIC url)
+# --------------------------------------------------------------------------- #
+
+
+def _wait_instagram_container(
+    base_url: str, creation_id: str, access_token: str, *, tries: int = 60, delay: int = 5
+) -> None:
+    """Poll an Instagram media container until it reports FINISHED."""
+    import requests  # lazy
+
+    for _ in range(tries):
+        code = requests.get(
+            f"{base_url}/{creation_id}",
+            params={"fields": "status_code", "access_token": access_token},
+            timeout=30,
+        ).json().get("status_code")
+        if code == "FINISHED":
+            return
+        if code in {"ERROR", "EXPIRED"}:
+            raise RuntimeError(f"Instagram media container {code}: check the media URL/format")
+        time.sleep(delay)
+    raise RuntimeError("Instagram media container did not finish processing in time")
+
+
+def post_instagram_image(
+    user_id: str, access_token: str, caption: str, image_url: str,
+    *, base_url: str = INSTAGRAM_API_BASE,
+) -> str:
+    """Create an image container from the PUBLIC url, wait, publish. Returns media id."""
+    import requests  # lazy
+
+    create = requests.post(
+        f"{base_url}/{user_id}/media",
+        params={"image_url": image_url, "caption": caption, "access_token": access_token},
+        timeout=30,
+    )
+    create.raise_for_status()
+    creation_id = create.json()["id"]
+    _wait_instagram_container(base_url, creation_id, access_token, tries=20, delay=3)
+    publish = requests.post(
+        f"{base_url}/{user_id}/media_publish",
+        params={"creation_id": creation_id, "access_token": access_token},
+        timeout=30,
+    )
+    publish.raise_for_status()
+    return publish.json()["id"]
+
+
+def post_instagram_video(
+    user_id: str, access_token: str, caption: str, video_url: str,
+    *, base_url: str = INSTAGRAM_API_BASE,
+) -> str:
+    """
+    Publish a Reel from the PUBLIC video url. Instagram only accepts API video as
+    REELS (in-feed video posts go out as Reels). Returns the published media id.
+    """
+    import requests  # lazy
+
+    create = requests.post(
+        f"{base_url}/{user_id}/media",
+        params={
+            "media_type": "REELS",
+            "video_url": video_url,
+            "caption": caption,
+            "access_token": access_token,
+        },
+        timeout=30,
+    )
+    create.raise_for_status()
+    creation_id = create.json()["id"]
+    _wait_instagram_container(base_url, creation_id, access_token)  # Reels processing is slower
+    publish = requests.post(
+        f"{base_url}/{user_id}/media_publish",
+        params={"creation_id": creation_id, "access_token": access_token},
+        timeout=30,
+    )
+    publish.raise_for_status()
+    return publish.json()["id"]
+
+
+def post_tiktok_video(
+    access_token: str,
+    caption: str,
+    video_url: str,
+    *,
+    privacy_level: str = "SELF_ONLY",
+    base_url: str = TIKTOK_API_BASE,
+) -> str:
+    """
+    Direct-post a video to TikTok from the PUBLIC url (PULL_FROM_URL) and poll
+    until publishing completes. Returns the publish_id.
+
+    Until the app passes TikTok's Content Posting audit, privacy_level must be
+    SELF_ONLY (the post is visible only to the creator). PULL_FROM_URL also
+    requires the host domain be verified in the TikTok developer portal.
+    """
+    import requests  # lazy
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json; charset=UTF-8",
+    }
+    # Creator info gates the allowed privacy levels and interaction settings.
+    info = requests.post(f"{base_url}/post/publish/creator_info/query/", headers=headers, timeout=30)
+    info.raise_for_status()
+
+    init = requests.post(
+        f"{base_url}/post/publish/video/init/",
+        headers=headers,
+        json={
+            "post_info": {
+                "title": caption[:2200],
+                "privacy_level": privacy_level,
+                "disable_comment": False,
+                "disable_duet": False,
+                "disable_stitch": False,
+            },
+            "source_info": {"source": "PULL_FROM_URL", "video_url": video_url},
+        },
+        timeout=60,
+    )
+    init.raise_for_status()
+    publish_id = init.json()["data"]["publish_id"]
+
+    for _ in range(60):
+        st = requests.post(
+            f"{base_url}/post/publish/status/fetch/",
+            headers=headers,
+            json={"publish_id": publish_id},
+            timeout=30,
+        ).json().get("data", {})
+        status = st.get("status")
+        if status == "PUBLISH_COMPLETE":
+            break
+        if status == "FAILED":
+            raise RuntimeError(f"TikTok publish failed: {st.get('fail_reason') or st}")
+        time.sleep(5)
+    return publish_id
+
+
+# --------------------------------------------------------------------------- #
 # Convenience: resolve + prepare + host in one call (what publish.py will use)
 # --------------------------------------------------------------------------- #
 
@@ -398,6 +865,16 @@ class HostedImage:
     local_path: Path
     public_url: str
     alt: str
+    kind: str = "image"
+
+
+@dataclass
+class HostedVideo:
+    local_path: Path
+    public_url: str
+    alt: str
+    duration_s: float = 0.0
+    kind: str = "video"
 
 
 def resolve_prepare_and_host(
@@ -427,21 +904,49 @@ def resolve_prepare_and_host(
     return HostedImage(local_path=ready, public_url=public_url, alt=alt)
 
 
+def resolve_prepare_and_host_video(
+    post_path: Path, frontmatter: dict, cfg: ImageHostConfig
+) -> HostedVideo | None:
+    """
+    Full pipeline for a post that has a `video:` field. Returns None when there
+    is no video.
+
+    Mirrors resolve_prepare_and_host: resolve the path, transcode/size it under
+    the strictest cap, then host it so Threads, Instagram, and TikTok can fetch it
+    by public URL. Bluesky/Mastodon/LinkedIn/X upload the local file directly.
+    """
+    video_field = frontmatter.get("video")
+    if not video_field:
+        return None
+
+    local_path = resolve_image_path(post_path, str(video_field))
+    ready = prepare_video(local_path)
+    alt = str(frontmatter.get("video-alt", "")).strip()
+    if not alt:
+        print(f"WARNING: {local_path.name} has no video-alt; posting without an alt description.")
+
+    duration = _ffprobe(ready)["duration"]
+    public_url = upload_to_image_host(ready, cfg, slug=post_path.stem)
+    return HostedVideo(local_path=ready, public_url=public_url, alt=alt, duration_s=duration)
+
+
 # --------------------------------------------------------------------------- #
-# Standalone smoke test: prepare + host a single image, print the URL.
+# Standalone smoke test: prepare + host a single image or video, print the URL.
 # --------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) != 2:
-        print("usage: python3 images.py <path-to-image>")
+        print("usage: uv run images.py <path-to-image-or-video>")
         raise SystemExit(2)
 
     src = Path(sys.argv[1]).expanduser().resolve()
-    ready = prepare_image(src)
+    is_video = src.suffix.lower() in VIDEO_SUFFIXES
+    ready = prepare_video(src) if is_video else prepare_image(src)
     cfg = ImageHostConfig.from_env()
     url = upload_to_image_host(ready, cfg, slug="smoke-test")
-    print(f"OK hosted at {url}")
-    print("Now curl it from off your LAN to confirm Threads can reach it:")
+    print(f"OK hosted {'video' if is_video else 'image'} at {url}")
+    print(f"  prepared file: {ready}")
+    print("Now curl it from off your network to confirm Threads/IG/TikTok can reach it:")
     print(f"  curl -I {url}")

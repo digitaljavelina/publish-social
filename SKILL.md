@@ -1,14 +1,14 @@
 ---
 name: publish-social
-description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, and X with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", or points at a post file and wants it live.
+description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and TikTok with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image or video. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", or points at a post file and wants it live.
 ---
 
-# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X
+# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X / Instagram / TikTok
 
 Each social post is a Markdown file: per-platform text in fenced code blocks and
-an optional `image:` field. `publish.py` reads a post, extracts each platform's
-text, optionally attaches one image, posts to the selected platforms, then marks
-the file posted and fills in its Publish Tracking table.
+an optional `image:` or `video:` field. `publish.py` reads a post, extracts each
+platform's text, optionally attaches one image or video, posts to the selected
+platforms, then marks the file posted and fills in its Publish Tracking table.
 
 `publish.py` is a PEP 723 script: run it with `uv` so dependencies resolve from
 the script header (no venv to manage). It reads credentials from
@@ -30,7 +30,7 @@ Two gates, because this posts to live public accounts:
 status: draft          # set to "ready" (with approved: true) to allow posting
 approved: false        # set to true after a human reviews the content
 platforms: [bluesky, mastodon, threads, linkedin, x]
-image: ./media/example.jpg   # optional; one image, every platform that takes one
+image: ./media/example.jpg   # optional; one image (or use `video: ./media/clip.mp4` for one video instead)
 image-alt: "Describe the image for screen readers."
 ---
 
@@ -55,23 +55,41 @@ Post text for Mastodon (<= 500 chars).
 ````
 
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` works.
-- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000 (the dry-run flags overages).
-- Hashtags are fine on Bluesky, Mastodon, LinkedIn, and X. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
+- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram/TikTok 2200 (the dry-run flags overages).
+- Hashtags are fine on Bluesky, Mastodon, LinkedIn, X, Instagram, and TikTok. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
+- A post carries **one image OR one video**, never both. Use `video:` like `image:`; video needs `ffmpeg` installed and is auto-transcoded to fit Bluesky's H.264 / 100 MB / 3-minute cap.
 
 ## Workflow
 
-1. Dry-run (changes nothing; prints per-platform text, char counts, and whether an image is attached):
+1. **Choose platforms (ask first).** Before the dry-run, get the offerable set
+   from the script, then ask the user which platforms to publish to with the
+   AskUserQuestion tool:
    ```bash
-   uv run publish.py --file path/to/post.md --dry-run
-   uv run publish.py --auto --dry-run --platforms bluesky,mastodon
+   uv run publish.py --file path/to/post.md --check   # or --auto --check
    ```
-   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x`; omit
-   it to use the file's `platforms:` frontmatter. `--auto` picks the most recently
-   modified `status: ready` file in the posts dir (`SOCIAL_POSTS_DIR`, default `~/social-posts`).
-2. Read the dry-run back to the user; flag anything truncated or wrong.
-3. After the user confirms and the gates are set, post for real (drop `--dry-run`):
+   `--check` prints a per-platform table and a final `OFFER:` line. A platform is
+   in `OFFER:` only when its credentials are present in `.env` **and** the post has
+   a `## <Platform>` text block. **Only offer the platforms in that `OFFER:` list**;
+   one with no credentials (or no text block) is never shown as a choice.
+
+   AskUserQuestion allows at most four options per question, so do it in two steps:
+   first a single-select, `All platforms` (everything in `OFFER:`) vs `Let me
+   choose`; then, only if they choose to pick, a `multiSelect` of the `OFFER:`
+   platforms, split across two questions (each with at least two options) when more
+   than four are offerable. Flag that **X spends real money** (~$0.015/post) in its
+   option description. The selection becomes the `--platforms` value below.
+2. **Dry-run** the chosen platforms (changes nothing; prints per-platform text,
+   char counts, and whether an image is attached):
    ```bash
-   uv run publish.py --file path/to/post.md
+   uv run publish.py --file path/to/post.md --dry-run --platforms <chosen>
+   ```
+   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x`. `--auto`
+   picks the most recently modified `status: ready` file in the posts dir
+   (`SOCIAL_POSTS_DIR`, default `~/social-posts`).
+3. Read the dry-run back to the user; flag anything truncated or wrong.
+4. After the user confirms and the gates are set, post for real (drop `--dry-run`):
+   ```bash
+   uv run publish.py --file path/to/post.md --platforms <chosen>
    ```
    Add `-y` to skip the interactive confirmation once the dry-run is approved. On
    success the file is marked `status: posted`, stamped `published-at`, and its
@@ -80,10 +98,16 @@ Post text for Mastodon (<= 500 chars).
 ## Notes
 
 - **X costs money** (pay-per-use): about $0.015 per post, $0.20 if the post
-  contains a link. The other four platforms are free. Skip X by leaving its creds
+  contains a link. The other platforms are free. Skip X by leaving its creds
   unset or omitting it from `--platforms`.
-- **One image max.** Bluesky, Mastodon, LinkedIn, and X take a direct upload.
-  Threads needs a public HTTPS URL it can fetch, so images on Threads require the
-  optional image host (see README.md). Text-only posting needs no image host.
-- If a platform's credentials are missing, that platform is skipped, not fatal.
-- The script never bulk-posts: one file per run.
+- **Instagram and TikTok have setup gates.** Instagram needs a Business/Creator
+  account and Meta App Review, and has no text-only posts (a post must carry an
+  image or video; video posts as a Reel). TikTok is **video-only** and posts
+  **SELF_ONLY** (visible only to you) until the app passes TikTok's Content
+  Posting audit. See README.md.
+- **One image OR one video** per post, never both. Bluesky, Mastodon, LinkedIn,
+  and X take a direct upload. Threads, Instagram, and TikTok fetch the media by
+  public HTTPS URL, so they require the optional media host (see README.md).
+  Text-only posting (where allowed) needs no host; video needs `ffmpeg` installed.
+- If a platform's credentials are missing, it is not offered (and `--check` omits
+  it); the script never bulk-posts: one file per run.

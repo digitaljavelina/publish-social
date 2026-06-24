@@ -1,20 +1,22 @@
 # publish-social
 
-Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, and X** with a single command. Write the post once (one fenced block per platform, one optional image), preview exactly what will go out, then post everywhere and get the links written back into the file.
+Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and TikTok** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
 
 Works both as a **Claude Code skill** and as a **standalone command-line tool**. This guide assumes you have never done any of this before and walks every step.
 
 ## Platforms at a glance
 
-| Platform | Cost | Images | How hard to set up |
+| Platform | Cost | Media | How hard to set up |
 |---|---|---|---|
 | Bluesky | Free | Direct upload | Easiest (~5 min) |
 | Mastodon | Free | Direct upload | Easy |
 | LinkedIn | Free | Direct upload | Needs a one-time API approval (days to weeks) |
-| Threads | Free | Needs a public image URL | Most involved (a browser OAuth flow) |
+| Threads | Free | Fetched from a public URL | Most involved (a browser OAuth flow) |
 | X / Twitter | **Paid** (~$0.015/post, $0.20 if the post has a link) | Direct upload | Moderate, and costs money |
+| Instagram | Free | Fetched from a public URL | Hard: needs a Business account + Meta App Review |
+| TikTok | Free | Fetched from a public URL | Hard: video-only, posts SELF_ONLY until an audit |
 
-You do not need all five. Set up only the ones you want; the rest are skipped automatically.
+Each post carries **one image or one video** (never both). You do not need all seven platforms; set up only the ones you want, and the rest are skipped automatically. Instagram and TikTok have extra gates (App Review / audit) described in their sections.
 
 ## Contents
 
@@ -23,11 +25,11 @@ You do not need all five. Set up only the ones you want; the rest are skipped au
 3. [Get publish-social](#3-get-publish-social)
 4. [Create your credentials file](#4-create-your-credentials-file)
 5. [Connect your platforms](#5-connect-your-platforms)
-   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter)
+   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [TikTok](#tiktok)
 6. [Write your first post](#6-write-your-first-post)
 7. [Preview with a dry run](#7-preview-with-a-dry-run)
 8. [Publish for real](#8-publish-for-real)
-9. [Adding an image](#9-adding-an-image)
+9. [Adding an image or video](#9-adding-an-image-or-video)
 10. [Keeping tokens alive](#10-keeping-tokens-alive)
 11. [Troubleshooting](#11-troubleshooting)
 
@@ -38,7 +40,7 @@ You do not need all five. Set up only the ones you want; the rest are skipped au
 Everything below makes more sense after this.
 
 - **A post is one Markdown file.** Inside it, the text for each platform sits in its own fenced code block under a `## <Platform>` heading. One file holds all platforms.
-- **One command sends it.** `publish.py` reads the file, pulls each platform's text, optionally attaches one image, posts to the platforms you pick, then writes the resulting links back into the file.
+- **One command sends it.** `publish.py` reads the file, pulls each platform's text, optionally attaches one image or video, posts to the platforms you pick, then writes the resulting links back into the file.
 - **Credentials live in a `.env` file** that you create once. Each platform needs a token or a small set of values there.
 - **Two safety gates.** A file only posts when its frontmatter says `status: ready` **and** `approved: true`. And you always do a **dry run** first, which shows exactly what would post and changes nothing.
 
@@ -67,6 +69,11 @@ Close and reopen the terminal, then confirm it works:
 uv --version
 ```
 If that prints a version number, you are ready.
+
+**For video posts, also install ffmpeg** (text-only and image-only posting do not need it):
+- macOS: `brew install ffmpeg`
+- Debian/Ubuntu: `sudo apt install ffmpeg`
+- Windows: `winget install Gyan.FFmpeg`
 
 ---
 
@@ -115,7 +122,7 @@ Open `~/.config/publish-social/.env` in a text editor. It lists every setting wi
 
 ## 5. Connect your platforms
 
-For the OAuth platforms (Threads, LinkedIn, X), `.env` holds two kinds of value, and mixing them up is the most common mistake:
+For the OAuth platforms (Threads, LinkedIn, X, Instagram, TikTok), `.env` holds two kinds of value, and mixing them up is the most common mistake:
 
 - **App credentials** (an id and a secret) identify your app. They are *inputs* used to get a token.
 - **Tokens** are the *result* of finishing the sign-in flow. They stay blank until you complete it.
@@ -293,6 +300,71 @@ print(f"OK X: @{tweepy.API(a).verify_credentials().screen_name}")
 PYEOF
 ```
 
+### Instagram
+
+Instagram publishes through the Meta Graph API, similar to Threads, but with heavier requirements. Three things gate it:
+
+- A **Business or Creator account** (personal accounts cannot use the publishing API). Convert yours in the Instagram app under Settings → Account type.
+- **Meta App Review** for the `instagram_business_content_publish` permission (2–4 weeks; you submit a screencast of the publish flow).
+- **Media on every post** — Instagram has no text-only posts. Video posts go out as Reels.
+
+1. At [developers.facebook.com](https://developers.facebook.com/), create a **Business** app, add the **Instagram** product, and choose **Instagram API with Instagram Login**. Put the app id and secret in `.env` (`INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`).
+2. Add the permissions `instagram_business_basic` and `instagram_business_content_publish`. Public posting needs the App Review approval; you can test with your own account while the app is in development.
+3. Set the OAuth redirect to a public URL you control (same idea as Threads), then authorize in the browser as your account and copy the `code`:
+   ```
+   https://www.instagram.com/oauth/authorize?client_id=YOUR_APP_ID&redirect_uri=https%3A%2F%2Fyourdomain.com%2F&scope=instagram_business_basic,instagram_business_content_publish&response_type=code
+   ```
+4. Exchange the code for a 60-day token and read your user id:
+   ```bash
+   uv run --with requests --with python-dotenv - << 'PYEOF'
+   import os, requests
+   from pathlib import Path
+   from dotenv import load_dotenv
+   CODE = "PASTE_CODE_HERE"               # the ?code= value, without #_
+   REDIRECT = "https://yourdomain.com/"
+   env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
+   load_dotenv(Path(env).expanduser())
+   aid, sec = os.environ["INSTAGRAM_APP_ID"], os.environ["INSTAGRAM_APP_SECRET"]
+   short = requests.post("https://api.instagram.com/oauth/access_token", data={
+       "client_id": aid, "client_secret": sec, "grant_type": "authorization_code",
+       "redirect_uri": REDIRECT, "code": CODE}).json()
+   long = requests.get("https://graph.instagram.com/access_token", params={
+       "grant_type": "ig_exchange_token", "client_secret": sec,
+       "access_token": short["access_token"]}).json()
+   tok = long["access_token"]
+   me = requests.get("https://graph.instagram.com/v23.0/me",
+                     params={"fields": "id,username", "access_token": tok}).json()
+   print(f"Add to .env:\nINSTAGRAM_USER_ID={me['id']}\nINSTAGRAM_ACCESS_TOKEN={tok}")
+   PYEOF
+   ```
+   The tool refreshes this token automatically before it expires. Instagram fetches media by public URL, so it also needs the media host (see [Adding an image or video](#9-adding-an-image-or-video)).
+
+### TikTok
+
+TikTok is **video-only**, and until your app passes TikTok's **Content Posting audit** every post is forced **SELF_ONLY** (visible only to you). You can set everything up and post privately now; public posting waits on the audit.
+
+1. At [developers.tiktok.com](https://developers.tiktok.com/), register and create an app. Copy the **Client key** and **Client secret** into `.env` (`TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`).
+2. Add the **Content Posting API** product and request the `video.publish` and `video.upload` scopes.
+3. **Verify your media-host domain** in the portal (under URL properties). TikTok only pulls video from a domain you have proven you own, so this is required before posting.
+4. Authorize with the OAuth flow (redirect to a URL you control), copy the `code`, and exchange it:
+   ```bash
+   uv run --with requests --with python-dotenv - << 'PYEOF'
+   import os, requests
+   from pathlib import Path
+   from dotenv import load_dotenv
+   CODE = "PASTE_CODE_HERE"
+   REDIRECT = "https://yourdomain.com/"
+   env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
+   load_dotenv(Path(env).expanduser())
+   r = requests.post("https://open.tiktokapis.com/v2/oauth/token/", data={
+       "client_key": os.environ["TIKTOK_CLIENT_KEY"], "client_secret": os.environ["TIKTOK_CLIENT_SECRET"],
+       "grant_type": "authorization_code", "code": CODE, "redirect_uri": REDIRECT},
+       headers={"Content-Type": "application/x-www-form-urlencoded"}).json()
+   print(f"Add to .env:\nTIKTOK_ACCESS_TOKEN={r['access_token']}\nTIKTOK_REFRESH_TOKEN={r['refresh_token']}")
+   PYEOF
+   ```
+   The access token lasts ~24h; with the refresh token set, the tool mints a fresh one automatically. TikTok fetches video by public URL, so it also needs the media host.
+
 ---
 
 ## 6. Write your first post
@@ -340,8 +412,8 @@ Your Mastodon text. Up to 500 characters.
 Rules to know:
 - The text that posts is only what is **inside each fenced code block**. Anything else (the title, notes) is ignored.
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` also works.
-- Character limits: Bluesky 300, X 280, Mastodon and Threads 500, LinkedIn 3000.
-- Hashtags work on Bluesky, Mastodon, LinkedIn, and X. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
+- Character limits: Bluesky 300, X 280, Mastodon and Threads 500, LinkedIn 3000, Instagram and TikTok 2200.
+- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, and TikTok. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
 - List the platforms you want in `platforms:`, or pass them on the command line (next steps).
 
 Write your text in each block. Leave `status: draft` and `approved: false` for now.
@@ -362,6 +434,12 @@ To dry-run only some platforms, add `--platforms`:
 ```bash
 uv run publish.py --file ~/social-posts/my-first-post.md --dry-run --platforms bluesky,mastodon
 ```
+
+To see which platforms are actually ready before you post, run `--check`. It lists each platform with whether its credentials are present and whether your post has a text block for it, ending with an `OFFER:` line of the ones good to go:
+```bash
+uv run publish.py --file ~/social-posts/my-first-post.md --check
+```
+A platform with no credentials in `.env` is reported as not offerable, so this is the quickest way to confirm your setup. (Running publish-social as a Claude Code skill, the assistant uses this to ask you which of the ready platforms to post to.)
 
 (If you get a message about `status` or `approved`, that is expected — the gates are covered next.)
 
@@ -394,9 +472,9 @@ uv run publish.py --auto --platforms bluesky,mastodon
 
 ---
 
-## 9. Adding an image
+## 9. Adding an image or video
 
-One image per post, attached to every platform that takes one. In the frontmatter:
+A post carries one image **or** one video (never both). For an image, attach it to every platform that takes one. In the frontmatter:
 
 ```yaml
 image: ./media/my-photo.jpg
@@ -413,6 +491,19 @@ The path is relative to the post file (put images in a `media/` folder next to i
   IMAGE_HOST_PATH=~/images                        # the folder that host serves
   ```
   The tool copies the image there and hands Threads the resulting link. **If you do not post images to Threads, you can ignore this entirely.**
+
+### Posting a video instead
+
+Use a `video:` field exactly like `image:` (one or the other, never both):
+
+```yaml
+video: ./media/my-clip.mp4
+video-alt: "A short description of the video."
+```
+
+- Requires **ffmpeg** (see [step 2](#2-install-the-prerequisites)). The tool checks the clip and, if needed, transcodes it to fit the strictest platform — **Bluesky: H.264 MP4, under 100 MB, 3 minutes or less**. A clip over 3 minutes is rejected so you can trim it; other formats (`.mov`, HEVC, `.webm`) are converted automatically.
+- **Bluesky, Mastodon, LinkedIn, and X** upload the video directly. **Threads, Instagram, and TikTok** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
+- **Instagram** posts video as a **Reel**; **TikTok** is video-only. Both require the media host.
 
 ### Optional: auto-find an image
 
@@ -434,6 +525,8 @@ uv run fetch_image.py --file ~/social-posts/my-first-post.md --apply <photo_id>
 | X | No | Nothing (regenerate only if you change app permissions or a key leaks) |
 | Threads | 60 days | Nothing — the tool refreshes it for you near expiry |
 | LinkedIn | 60-day access / 365-day refresh | Nothing if you set `LINKEDIN_REFRESH_TOKEN`; otherwise re-mint the token about every 55 days |
+| Instagram | 60 days | Nothing — the tool refreshes it for you near expiry |
+| TikTok | ~24h access / ~365-day refresh | Nothing if you set `TIKTOK_REFRESH_TOKEN`; the tool mints a fresh access token whenever a run needs one |
 
 If a token ever leaks, revoke it in that platform's app settings, re-issue it, and update `.env`.
 
@@ -454,6 +547,12 @@ If a token ever leaks, revoke it in that platform's app settings, re-issue it, a
 | LinkedIn: `401 INVALID_ACCESS_TOKEN` but the token looks active | You pasted the refresh token into the access-token slot. Put the access token in `LINKEDIN_ACCESS_TOKEN` |
 | X: `403` about oauth1 app permissions | The access token was generated before the app was set to Read and write. Set write, then **regenerate** the token |
 | X: a post cost $0.20 instead of $0.015 | Expected — X charges more for posts that contain a link |
+| Instagram: post rejected as text-only | Instagram has no text-only posts; add an `image:` or `video:` |
+| Instagram / TikTok: media URL not accessible, or pull fails | The media host must serve the file over public HTTPS (and serve video extensions, for video). Test the URL from another network |
+| TikTok: the post is not visible to anyone | Expected before the audit — posts are SELF_ONLY. After passing it, set `TIKTOK_PRIVACY_LEVEL=PUBLIC_TO_EVERYONE` in `.env` |
+| `ffmpeg/ffprobe not found` | Install ffmpeg (see step 2); it is required for video |
+| Video rejected as too long (`... the cap is 180s`) | The clip is over Bluesky's 3-minute limit; trim it (the tool never auto-trims) |
+| `Post sets both image: and video:` | A post takes one or the other, not both; remove one |
 | `ModuleNotFoundError` | Run the scripts with `uv` (as shown), which installs dependencies automatically |
 
 ---
