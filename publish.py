@@ -88,10 +88,12 @@ DISPLAY = {
 
 # Soft character ceilings. We warn rather than block, since the generator
 # already targets these and an occasional overage is the human's call.
-# Instagram captions allow ~2,200 characters.
+# Instagram captions allow ~2,200 characters. X's 25,000 reflects an active
+# Premium subscription (the free tier caps at 280); X enforces the real limit
+# server-side, so this only governs the dry-run warning.
 CHAR_LIMITS = {
     "bluesky": 300, "mastodon": 500, "threads": 500, "linkedin": 3000,
-    "x": 280, "instagram": 2200, "facebook": 63206,
+    "x": 25_000, "instagram": 2200, "facebook": 63206,
 }
 
 # Minimum credentials each platform needs before it can be offered or attempted.
@@ -200,6 +202,37 @@ def strip_threads_hashtags(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)    # gaps left mid-line
     text = re.sub(r"\n{3,}", "\n\n", text)    # blank-line runs
     return text.strip()
+
+
+# A link in an X post triggers the ~$0.20 surcharge (vs ~$0.015 without) and is
+# easy to include by accident, so we detect one to gate it behind a double
+# confirm. We over-detect on purpose: a false positive costs only an extra
+# prompt, while a miss would let a link publish unconfirmed. This matches
+# explicit URLs, www.* hosts, and bare domains on common web TLDs (so dev tokens
+# like "publish.py" or "README.md" do not trip it). #hashtags and @mentions are
+# not links to X and are not matched. The TLD list is intentionally web-leaning,
+# not exhaustive.
+_X_LINK_RE = re.compile(
+    r"(?ix)\b("
+    r"https?://\S+"                               # explicit scheme
+    r"|www\.\S+"                                  # www host
+    r"|[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:"  # bare domain + subdomains
+    r"com|org|net|io|dev|ai|co|app|me|xyz|blog|news|gg|so|sh|to|info|biz|tv|us|"
+    r"be|ly|fm|link|page|site|online|store|shop|live|media|club|tech|design"
+    r")(?:/\S*)?"                                 # optional path
+    r")"
+)
+
+
+def find_link(text: str) -> str | None:
+    """Return the first link-like substring in `text`, or None if it has none.
+
+    Used only to decide whether the X double-confirm guardrail fires. X auto-links
+    URLs and bare domains (but not #hashtags or @mentions) and bills more when a
+    post carries a link, so this leans toward catching rather than missing.
+    """
+    m = _X_LINK_RE.search(text)
+    return m.group(0) if m else None
 
 
 # --------------------------------------------------------------------------- #
@@ -822,6 +855,28 @@ def confirm(platforms: list[str]) -> bool:
     return answer in {"y", "yes"}
 
 
+def confirm_x_link(link: str) -> bool:
+    """Two-step confirmation before publishing a link to X.
+
+    A link on X bills ~$0.20 (vs ~$0.015 without) and is easy to include by
+    accident, so we require an explicit yes, then a second "are you sure". This
+    gate is deliberately NOT bypassed by --yes: a link on X must always be
+    verified by a human. A non-interactive run (cron/pipe, or no TTY) cannot
+    confirm, so it returns False and the caller skips X. Returns True only when
+    both answers are yes.
+    """
+    print(f"\n  X GUARDRAIL: the X post contains a link -> {link}")
+    print("  Publishing a link on X bills ~$0.20 (a link-free post is ~$0.015).")
+    if not sys.stdin.isatty():
+        print("  Non-interactive run: cannot double-confirm a link, so X will be skipped.")
+        return False
+    first = input("  Confirm 1 of 2 - publish this link to X? [y/N] ").strip().lower()
+    if first not in {"y", "yes"}:
+        return False
+    second = input("  Confirm 2 of 2 - are you sure? this posts the link and bills ~$0.20 [y/N] ").strip().lower()
+    return second in {"y", "yes"}
+
+
 def run_check(args: argparse.Namespace) -> int:
     """Report which platforms are offerable and post nothing.
 
@@ -891,6 +946,9 @@ def main() -> int:
         flag = f"  (OVER limit by {over})" if over > 0 else ""
         if args.dry_run:
             print(f"\n--- {p} ({len(text)} chars){flag} ---\n{text}")
+            if p == "x" and find_link(text):
+                print("  note: contains a link -> X bills ~$0.20, and a real post"
+                      " will require a double confirmation.")
         elif over > 0:
             print(f"  warning: {p} text is over the {CHAR_LIMITS[p]}-char limit by {over}")
         texts[p] = text
@@ -898,6 +956,19 @@ def main() -> int:
     if args.dry_run:
         print("\nDry run only. Nothing was posted.")
         return 0
+
+    # X link guardrail: never publish a link to X without an explicit double
+    # confirmation. A link bills ~$0.20 (vs ~$0.015) and is easy to include by
+    # accident. Skipped entirely when X is not a target or its text has no link;
+    # runs even under --yes, since a link on X must always be verified by a human.
+    if "x" in platforms:
+        x_link = find_link(texts["x"])
+        if x_link and not confirm_x_link(x_link):
+            print("Skipping X: link not confirmed. Other platforms are unaffected.")
+            platforms = [p for p in platforms if p != "x"]
+            if not platforms:
+                print("No platforms left to post. Aborted.")
+                return 1
 
     if not args.yes and not confirm(platforms):
         print("Aborted.")

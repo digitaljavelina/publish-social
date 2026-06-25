@@ -268,7 +268,9 @@ The most involved platform; allow about an hour the first time. Every Threads to
 
 ### X / Twitter
 
-X is the only platform that **costs money**. New developers pay per use: about **$0.015 per post**, or **$0.20 if the post contains a link**. There is no free tier. You buy credits up front and can set a spending cap.
+X is the only platform that **costs money**. New developers pay per use: about **$0.015 per post**, or **$0.20 if the post contains a link**. There is no free API tier for posting. You buy credits up front and can set a spending cap.
+
+**Character limit depends on your subscription level.** A free X account caps a post at **280 characters**; a paid **X Premium** subscription raises that to **25,000**. publish-social treats this as a soft warning only (X enforces the real cap server-side) through `CHAR_LIMITS["x"]` in `publish.py`. It ships set to **25,000** for a Premium account, so if you are on the **free tier, lower it to 280** so the dry run flags overlong posts.
 
 1. Go to the [X Developer Portal](https://developer.x.com/), sign in as the posting account, and create a **Project** and an **App** inside it (name it `publish-social`).
 2. In the Developer Console, add a payment method and enable pay-per-use. Set a monthly spending limit while you are there.
@@ -415,7 +417,7 @@ Your Mastodon text. Up to 500 characters.
 Rules to know:
 - The text that posts is only what is **inside each fenced code block**. Anything else (the title, notes) is ignored.
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` also works.
-- Character limits: Bluesky 300, X 280, Mastodon and Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited.
+- Character limits: Bluesky 300, X 280 on the free tier (25,000 with X Premium), Mastodon and Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited.
 - Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, and Facebook. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
 - List the platforms you want in `platforms:`, or pass them on the command line (next steps).
 
