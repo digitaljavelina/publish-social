@@ -1,6 +1,6 @@
 # publish-social
 
-Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, TikTok, and Facebook** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
+Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and Facebook** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
 
 Works both as a **Claude Code skill** and as a **standalone command-line tool**. This guide assumes you have never done any of this before and walks every step.
 
@@ -14,10 +14,9 @@ Works both as a **Claude Code skill** and as a **standalone command-line tool**.
 | Threads | Free | Fetched from a public URL | Most involved (a browser OAuth flow) |
 | X / Twitter | **Paid** (~$0.015/post, $0.20 if the post has a link) | Direct upload | Moderate, and costs money |
 | Instagram | Free | Fetched from a public URL | Hard: needs a Business account + Meta App Review |
-| TikTok | Free | Fetched from a public URL | Hard: video-only, posts SELF_ONLY until an audit |
 | Facebook | Free | Fetched from a public URL | Moderate: a Page you admin; non-expiring token |
 
-Each post carries **one image or one video** (never both). You do not need all eight platforms; set up only the ones you want, and the rest are skipped automatically. Instagram and TikTok have extra gates (App Review / audit) described in their sections.
+Each post carries **one image or one video** (never both). You do not need all seven platforms; set up only the ones you want, and the rest are skipped automatically. Instagram has an extra gate (App Review) described in its section.
 
 ## Contents
 
@@ -26,7 +25,7 @@ Each post carries **one image or one video** (never both). You do not need all e
 3. [Get publish-social](#3-get-publish-social)
 4. [Create your credentials file](#4-create-your-credentials-file)
 5. [Connect your platforms](#5-connect-your-platforms)
-   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [TikTok](#tiktok) · [Facebook](#facebook)
+   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [Facebook](#facebook)
 6. [Write your first post](#6-write-your-first-post)
 7. [Preview with a dry run](#7-preview-with-a-dry-run)
 8. [Publish for real](#8-publish-for-real)
@@ -123,7 +122,7 @@ Open `~/.config/publish-social/.env` in a text editor. It lists every setting wi
 
 ## 5. Connect your platforms
 
-For the OAuth platforms (Threads, LinkedIn, X, Instagram, TikTok, Facebook), `.env` holds two kinds of value, and mixing them up is the most common mistake:
+For the OAuth platforms (Threads, LinkedIn, X, Instagram, Facebook), `.env` holds two kinds of value, and mixing them up is the most common mistake:
 
 - **App credentials** (an id and a secret) identify your app. They are *inputs* used to get a token.
 - **Tokens** are the *result* of finishing the sign-in flow. They stay blank until you complete it.
@@ -326,32 +325,6 @@ Instagram publishes through the Meta Graph API (the **Instagram API with Instagr
 
 > **Prefer scripting it?** You can use the manual OAuth flow instead, but then the `redirect_uri` in your authorize URL must exactly match an entry under **Instagram → API setup with Instagram Login → Business login settings → OAuth redirect URIs** (this is a different field from the webhook Callback URL). The one-click token above avoids that entirely.
 
-### TikTok
-
-TikTok is **video-only**, and until your app passes TikTok's **Content Posting audit** every post is forced **SELF_ONLY** (visible only to you). You can set everything up and post privately now; public posting waits on the audit.
-
-1. At [developers.tiktok.com](https://developers.tiktok.com/), register and create an app. Copy the **Client key** and **Client secret** into `.env` (`TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`).
-2. Add the **Content Posting API** product and request the `video.publish` and `video.upload` scopes.
-3. **Verify your media-host domain** in the portal (under URL properties). TikTok only pulls video from a domain you have proven you own, so this is required before posting.
-4. Authorize with the OAuth flow (redirect to a URL you control), copy the `code`, and exchange it:
-   ```bash
-   uv run --with requests --with python-dotenv - << 'PYEOF'
-   import os, requests
-   from pathlib import Path
-   from dotenv import load_dotenv
-   CODE = "PASTE_CODE_HERE"
-   REDIRECT = "https://yourdomain.com/"
-   env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
-   load_dotenv(Path(env).expanduser())
-   r = requests.post("https://open.tiktokapis.com/v2/oauth/token/", data={
-       "client_key": os.environ["TIKTOK_CLIENT_KEY"], "client_secret": os.environ["TIKTOK_CLIENT_SECRET"],
-       "grant_type": "authorization_code", "code": CODE, "redirect_uri": REDIRECT},
-       headers={"Content-Type": "application/x-www-form-urlencoded"}).json()
-   print(f"Add to .env:\nTIKTOK_ACCESS_TOKEN={r['access_token']}\nTIKTOK_REFRESH_TOKEN={r['refresh_token']}")
-   PYEOF
-   ```
-   The access token lasts ~24h; with the refresh token set, the tool mints a fresh one automatically. TikTok fetches video by public URL, so it also needs the media host.
-
 ### Facebook
 
 Posts to a **Facebook Page** (not a personal profile). It handles text, image, and video, and the Page token is **long-lived (non-expiring)**, so there's nothing to renew. You must be an **admin of the Page**, and you can add this to the same Meta app you use for Threads/Instagram or a separate one.
@@ -442,8 +415,8 @@ Your Mastodon text. Up to 500 characters.
 Rules to know:
 - The text that posts is only what is **inside each fenced code block**. Anything else (the title, notes) is ignored.
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` also works.
-- Character limits: Bluesky 300, X 280, Mastodon and Threads 500, LinkedIn 3000, Instagram and TikTok 2200, Facebook effectively unlimited.
-- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, TikTok, and Facebook. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
+- Character limits: Bluesky 300, X 280, Mastodon and Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited.
+- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, and Facebook. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
 - List the platforms you want in `platforms:`, or pass them on the command line (next steps).
 
 Write your text in each block. Leave `status: draft` and `approved: false` for now.
@@ -532,8 +505,8 @@ video-alt: "A short description of the video."
 ```
 
 - Requires **ffmpeg** (see [step 2](#2-install-the-prerequisites)). The tool checks the clip and, if needed, transcodes it to fit the strictest platform — **Bluesky: H.264 MP4, under 100 MB, 3 minutes or less**. A clip over 3 minutes is rejected so you can trim it; other formats (`.mov`, HEVC, `.webm`) are converted automatically.
-- **Bluesky, Mastodon, LinkedIn, and X** upload the video directly. **Threads, Instagram, TikTok, and Facebook** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
-- **Instagram** posts video as a **Reel**; **TikTok** is video-only. Both require the media host.
+- **Bluesky, Mastodon, LinkedIn, and X** upload the video directly. **Threads, Instagram, and Facebook** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
+- **Instagram** posts video as a **Reel**, and it requires the media host.
 
 ### Optional: auto-find an image
 
@@ -556,7 +529,6 @@ uv run fetch_image.py --file ~/social-posts/my-first-post.md --apply <photo_id>
 | Threads | 60 days | Nothing — the tool refreshes it for you near expiry |
 | LinkedIn | 60-day access / 365-day refresh | Nothing if you set `LINKEDIN_REFRESH_TOKEN`; otherwise re-mint the token about every 55 days |
 | Instagram | 60 days | Nothing — the tool refreshes it for you near expiry |
-| TikTok | ~24h access / ~365-day refresh | Nothing if you set `TIKTOK_REFRESH_TOKEN`; the tool mints a fresh access token whenever a run needs one |
 | Facebook | No (long-lived Page token) | Nothing; re-mint only if you change your password, revoke the app, or the Page admin changes |
 
 If a token ever leaks, revoke it in that platform's app settings, re-issue it, and update `.env`.
@@ -579,8 +551,7 @@ If a token ever leaks, revoke it in that platform's app settings, re-issue it, a
 | X: `403` about oauth1 app permissions | The access token was generated before the app was set to Read and write. Set write, then **regenerate** the token |
 | X: a post cost $0.20 instead of $0.015 | Expected — X charges more for posts that contain a link |
 | Instagram: post rejected as text-only | Instagram has no text-only posts; add an `image:` or `video:` |
-| Instagram / TikTok: media URL not accessible, or pull fails | The media host must serve the file over public HTTPS (and serve video extensions, for video). Test the URL from another network |
-| TikTok: the post is not visible to anyone | Expected before the audit — posts are SELF_ONLY. After passing it, set `TIKTOK_PRIVACY_LEVEL=PUBLIC_TO_EVERYONE` in `.env` |
+| Instagram: media URL not accessible, or pull fails | The media host must serve the file over public HTTPS (and serve video extensions, for video). Test the URL from another network |
 | `ffmpeg/ffprobe not found` | Install ffmpeg (see step 2); it is required for video |
 | Video rejected as too long (`... the cap is 180s`) | The clip is over Bluesky's 3-minute limit; trim it (the tool never auto-trims) |
 | `Post sets both image: and video:` | A post takes one or the other, not both; remove one |

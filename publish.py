@@ -13,7 +13,7 @@
 # ///
 """
 publish.py - publish a social post to Bluesky, Mastodon, Threads, LinkedIn, X,
-Instagram, TikTok, and Facebook.
+Instagram, and Facebook.
 
 Reads a Markdown post file (frontmatter plus one fenced code block per platform),
 optionally attaches one image OR one video (see images.py), publishes to the
@@ -71,11 +71,9 @@ DEFAULT_POSTS_DIR = Path(
 # X posts via pay-per-use OAuth 1.0a (see the setup guide). It is the only
 # platform that costs money: ~$0.015 per text/image post, ~$0.20 if the post
 # contains a link. Posting an `x` section spends real credits.
-SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "tiktok", "facebook")
+SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "facebook")
 
 # Instagram requires media (no text-only posts) and posts video as a Reel.
-# TikTok is video-only and, until the app passes TikTok's Content Posting audit,
-# posts as SELF_ONLY (visible only to the account owner). See README.md.
 
 # Canonical display names, matching the `## Heading` and Publish Tracking table.
 DISPLAY = {
@@ -85,16 +83,15 @@ DISPLAY = {
     "linkedin": "LinkedIn",
     "x": "X",
     "instagram": "Instagram",
-    "tiktok": "TikTok",
     "facebook": "Facebook",
 }
 
 # Soft character ceilings. We warn rather than block, since the generator
 # already targets these and an occasional overage is the human's call.
-# Instagram and TikTok captions both allow ~2,200 characters.
+# Instagram captions allow ~2,200 characters.
 CHAR_LIMITS = {
     "bluesky": 300, "mastodon": 500, "threads": 500, "linkedin": 3000,
-    "x": 280, "instagram": 2200, "tiktok": 2200, "facebook": 63206,
+    "x": 280, "instagram": 2200, "facebook": 63206,
 }
 
 # Minimum credentials each platform needs before it can be offered or attempted.
@@ -107,7 +104,6 @@ REQUIRED_ENV = {
     "linkedin": ("LINKEDIN_ACCESS_TOKEN", "LINKEDIN_ORG_URN"),
     "x": ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"),
     "instagram": ("INSTAGRAM_USER_ID", "INSTAGRAM_ACCESS_TOKEN"),
-    "tiktok": ("TIKTOK_ACCESS_TOKEN",),
     "facebook": ("FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN"),
 }
 
@@ -459,23 +455,6 @@ def post_instagram(text: str, media: "images.HostedImage | images.HostedVideo | 
     return permalink or f"(posted; Instagram media {media_id})"
 
 
-def post_tiktok(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
-    # TikTok is video-only. Until the app passes TikTok's Content Posting audit,
-    # posts are forced SELF_ONLY (visible only to the account owner).
-    if media is None or media.kind != "video":
-        raise PublishError("TikTok requires a video; set `video:` in the post frontmatter.")
-
-    token = tiktok_access_token()  # ~24h token; refreshes when near expiry
-    privacy = os.environ.get("TIKTOK_PRIVACY_LEVEL", "SELF_ONLY")
-    publish_id = images.post_tiktok_video(token, text, media.public_url, privacy_level=privacy)
-    note = (
-        "SELF_ONLY (private until the app passes TikTok's Content Posting audit)"
-        if privacy == "SELF_ONLY"
-        else privacy
-    )
-    return f"(TikTok publish_id {publish_id}; {note})"
-
-
 def post_facebook(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
     # Posts to a Facebook Page via the Graph API. A Page access token minted from a
     # long-lived user token is non-expiring, so Facebook needs no refresh machinery
@@ -509,7 +488,6 @@ POSTERS = {
     "linkedin": post_linkedin,
     "x": post_x,
     "instagram": post_instagram,
-    "tiktok": post_tiktok,
     "facebook": post_facebook,
 }
 
@@ -749,85 +727,6 @@ def instagram_access_token() -> str:
             return token
     if time.time() >= int(exp) - 172_800:
         return refresh_instagram_token()
-    return token
-
-
-# --------------------------------------------------------------------------- #
-# TikTok token refresh. Access tokens last ~24h; refresh tokens last ~365 days
-# and mint new access tokens without a browser, so a configured refresh token
-# keeps posting hands-off until the refresh token itself expires.
-# --------------------------------------------------------------------------- #
-
-
-def _tiktok_refresh_configured() -> bool:
-    """True only if we have everything needed to mint a new access token."""
-    return all(
-        os.environ.get(k)
-        for k in ("TIKTOK_REFRESH_TOKEN", "TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET")
-    )
-
-
-def refresh_tiktok_token() -> str:
-    """Exchange the stored refresh token for a fresh ~24h access token.
-
-    TikTok rotates the refresh token on use, so we persist whatever it returns
-    plus an expiry stamp, and mirror all three into the live environment.
-    """
-    import time
-
-    import requests
-
-    refresh = require_env("TIKTOK_REFRESH_TOKEN")
-    resp = requests.post(
-        "https://open.tiktokapis.com/v2/oauth/token/",
-        data={
-            "client_key": require_env("TIKTOK_CLIENT_KEY"),
-            "client_secret": require_env("TIKTOK_CLIENT_SECRET"),
-            "grant_type": "refresh_token",
-            "refresh_token": refresh,
-        },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=30,
-    )
-    if resp.status_code != 200 or "access_token" not in resp.json():
-        raise PublishError(
-            f"TikTok token refresh failed (HTTP {resp.status_code}): {resp.text[:200]}. "
-            "The refresh token is likely expired or revoked; re-authorize (see README.md)."
-        )
-    data = resp.json()
-    access = data["access_token"]
-    new_refresh = data.get("refresh_token", refresh)
-    expires_in = int(data.get("expires_in", 0))
-    expires_at = int(time.time()) + expires_in
-    update_env_values(
-        {
-            "TIKTOK_ACCESS_TOKEN": access,
-            "TIKTOK_REFRESH_TOKEN": new_refresh,
-            "TIKTOK_TOKEN_EXPIRES_AT": str(expires_at),
-        }
-    )
-    os.environ["TIKTOK_ACCESS_TOKEN"] = access
-    os.environ["TIKTOK_REFRESH_TOKEN"] = new_refresh
-    os.environ["TIKTOK_TOKEN_EXPIRES_AT"] = str(expires_at)
-    print(f"  TikTok access token refreshed (valid ~{round(expires_in / 3600)}h).")
-    return access
-
-
-def tiktok_access_token() -> str:
-    """Return a usable TikTok access token, refreshing first if it is missing or
-    within an hour of expiry and a refresh token is configured. The access token
-    only lives ~24h, so the pre-expiry window is tighter than LinkedIn/Threads.
-    """
-    token = os.environ.get("TIKTOK_ACCESS_TOKEN", "")
-    if _tiktok_refresh_configured():
-        import time
-
-        exp = os.environ.get("TIKTOK_TOKEN_EXPIRES_AT", "")
-        near_expiry = (not token) or (exp.isdigit() and time.time() >= int(exp) - 3600)
-        if near_expiry:
-            return refresh_tiktok_token()
-    if not token:
-        raise PublishError(f"TIKTOK_ACCESS_TOKEN not set. Check {ENV_PATH}.")
     return token
 
 

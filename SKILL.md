@@ -1,9 +1,9 @@
 ---
 name: publish-social
-description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, TikTok, and Facebook with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image or video. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", or points at a post file and wants it live.
+description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and Facebook with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image or video. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", or points at a post file and wants it live.
 ---
 
-# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X / Instagram / TikTok / Facebook
+# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X / Instagram / Facebook
 
 Each social post is a Markdown file: per-platform text in fenced code blocks and
 an optional `image:` or `video:` field. `publish.py` reads a post, extracts each
@@ -55,8 +55,8 @@ Post text for Mastodon (<= 500 chars).
 ````
 
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` works.
-- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram/TikTok 2200, Facebook effectively unlimited (the dry-run flags overages).
-- Hashtags are fine on Bluesky, Mastodon, LinkedIn, X, Instagram, TikTok, and Facebook. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
+- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited (the dry-run flags overages).
+- Hashtags are fine on Bluesky, Mastodon, LinkedIn, X, Instagram, and Facebook. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
 - A post carries **one image OR one video**, never both. Use `video:` like `image:`; video needs `ffmpeg` installed and is auto-transcoded to fit Bluesky's H.264 / 100 MB / 3-minute cap.
 
 ## Workflow
@@ -83,7 +83,7 @@ Post text for Mastodon (<= 500 chars).
    ```bash
    uv run publish.py --file path/to/post.md --dry-run --platforms <chosen>
    ```
-   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x,instagram,tiktok,facebook`. `--auto`
+   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x,instagram,facebook`. `--auto`
    picks the most recently modified `status: ready` file in the posts dir
    (`SOCIAL_POSTS_DIR`, default `~/social-posts`).
 3. Read the dry-run back to the user; flag anything truncated or wrong.
@@ -100,18 +100,16 @@ Post text for Mastodon (<= 500 chars).
 - **X costs money** (pay-per-use): about $0.015 per post, $0.20 if the post
   contains a link. The other platforms are free. Skip X by leaving its creds
   unset or omitting it from `--platforms`.
-- **Instagram and TikTok have setup gates.** Instagram needs a Business/Creator
-  account and Meta App Review, and has no text-only posts (a post must carry an
-  image or video; video posts as a Reel). TikTok is **video-only** and posts
-  **SELF_ONLY** (visible only to you) until the app passes TikTok's Content
-  Posting audit. See README.md.
+- **Instagram has setup gates.** It needs a Business/Creator account and Meta App
+  Review, and has no text-only posts (a post must carry an image or video; video
+  posts as a Reel). See README.md.
 - **Facebook** posts to a Page you administer (text, image, or video) via the
   Graph API with a non-expiring Page token. Posting to your own Page works in the
   app's development mode; App Review for `pages_manage_posts` is only needed to go
   further. See README.md.
 - **One image OR one video** per post, never both. Bluesky, Mastodon, LinkedIn,
-  and X take a direct upload. Threads, Instagram, TikTok, and Facebook fetch the
-  media by public HTTPS URL, so they require the optional media host (see README.md).
+  and X take a direct upload. Threads, Instagram, and Facebook fetch the media by
+  public HTTPS URL, so they require the optional media host (see README.md).
   Text-only posting (where allowed) needs no host; video needs `ffmpeg` installed.
 - If a platform's credentials are missing, it is not offered (and `--check` omits
   it); the script never bulk-posts: one file per run.

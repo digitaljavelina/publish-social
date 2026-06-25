@@ -53,9 +53,6 @@ LINKEDIN_API_VERSION = "202506"
 # Instagram content publishing uses the Meta Graph API with Instagram Login.
 INSTAGRAM_API_BASE = "https://graph.instagram.com/v23.0"
 
-# TikTok Content Posting API base.
-TIKTOK_API_BASE = "https://open.tiktokapis.com/v2"
-
 # Facebook Page posting uses the Meta Graph API.
 FACEBOOK_API_BASE = "https://graph.facebook.com/v23.0"
 
@@ -290,7 +287,7 @@ def prepare_video(path: Path) -> Path:
       2. An MP4 that is already H.264/AAC and under the byte cap passes through.
       3. Otherwise transcode down VIDEO_SHRINK_LADDER (scale + CRF), returning the
          first rung that fits. This also normalizes non-H.264 sources (.mov/HEVC,
-         .webm) that Threads/Instagram/TikTok would otherwise reject.
+         .webm) that Threads/Instagram/Facebook would otherwise reject.
       4. Give up with VideoTooLargeError only if even the smallest rung is over.
     """
     if path.suffix.lower() not in VIDEO_SUFFIXES:
@@ -718,7 +715,7 @@ def upload_x_video(
 
 
 # --------------------------------------------------------------------------- #
-# Step 4c: Instagram + TikTok posters (both fetch media from the PUBLIC url)
+# Step 4c: Instagram + Facebook posters (both fetch media from the PUBLIC url)
 # --------------------------------------------------------------------------- #
 
 
@@ -796,66 +793,6 @@ def post_instagram_video(
     )
     publish.raise_for_status()
     return publish.json()["id"]
-
-
-def post_tiktok_video(
-    access_token: str,
-    caption: str,
-    video_url: str,
-    *,
-    privacy_level: str = "SELF_ONLY",
-    base_url: str = TIKTOK_API_BASE,
-) -> str:
-    """
-    Direct-post a video to TikTok from the PUBLIC url (PULL_FROM_URL) and poll
-    until publishing completes. Returns the publish_id.
-
-    Until the app passes TikTok's Content Posting audit, privacy_level must be
-    SELF_ONLY (the post is visible only to the creator). PULL_FROM_URL also
-    requires the host domain be verified in the TikTok developer portal.
-    """
-    import requests  # lazy
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json; charset=UTF-8",
-    }
-    # Creator info gates the allowed privacy levels and interaction settings.
-    info = requests.post(f"{base_url}/post/publish/creator_info/query/", headers=headers, timeout=30)
-    info.raise_for_status()
-
-    init = requests.post(
-        f"{base_url}/post/publish/video/init/",
-        headers=headers,
-        json={
-            "post_info": {
-                "title": caption[:2200],
-                "privacy_level": privacy_level,
-                "disable_comment": False,
-                "disable_duet": False,
-                "disable_stitch": False,
-            },
-            "source_info": {"source": "PULL_FROM_URL", "video_url": video_url},
-        },
-        timeout=60,
-    )
-    init.raise_for_status()
-    publish_id = init.json()["data"]["publish_id"]
-
-    for _ in range(60):
-        st = requests.post(
-            f"{base_url}/post/publish/status/fetch/",
-            headers=headers,
-            json={"publish_id": publish_id},
-            timeout=30,
-        ).json().get("data", {})
-        status = st.get("status")
-        if status == "PUBLISH_COMPLETE":
-            break
-        if status == "FAILED":
-            raise RuntimeError(f"TikTok publish failed: {st.get('fail_reason') or st}")
-        time.sleep(5)
-    return publish_id
 
 
 def post_facebook_photo(
@@ -955,7 +892,7 @@ def resolve_prepare_and_host_video(
     is no video.
 
     Mirrors resolve_prepare_and_host: resolve the path, transcode/size it under
-    the strictest cap, then host it so Threads, Instagram, and TikTok can fetch it
+    the strictest cap, then host it so Threads, Instagram, and Facebook can fetch it
     by public URL. Bluesky/Mastodon/LinkedIn/X upload the local file directly.
     """
     video_field = frontmatter.get("video")
@@ -991,5 +928,5 @@ if __name__ == "__main__":
     url = upload_to_image_host(ready, cfg, slug="smoke-test")
     print(f"OK hosted {'video' if is_video else 'image'} at {url}")
     print(f"  prepared file: {ready}")
-    print("Now curl it from off your network to confirm Threads/IG/TikTok can reach it:")
+    print("Now curl it from off your network to confirm Threads/IG/Facebook can reach it:")
     print(f"  curl -I {url}")
