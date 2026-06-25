@@ -13,7 +13,7 @@
 # ///
 """
 publish.py - publish a social post to Bluesky, Mastodon, Threads, LinkedIn, X,
-Instagram, and TikTok.
+Instagram, TikTok, and Facebook.
 
 Reads a Markdown post file (frontmatter plus one fenced code block per platform),
 optionally attaches one image OR one video (see images.py), publishes to the
@@ -71,7 +71,7 @@ DEFAULT_POSTS_DIR = Path(
 # X posts via pay-per-use OAuth 1.0a (see the setup guide). It is the only
 # platform that costs money: ~$0.015 per text/image post, ~$0.20 if the post
 # contains a link. Posting an `x` section spends real credits.
-SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "tiktok")
+SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "tiktok", "facebook")
 
 # Instagram requires media (no text-only posts) and posts video as a Reel.
 # TikTok is video-only and, until the app passes TikTok's Content Posting audit,
@@ -86,6 +86,7 @@ DISPLAY = {
     "x": "X",
     "instagram": "Instagram",
     "tiktok": "TikTok",
+    "facebook": "Facebook",
 }
 
 # Soft character ceilings. We warn rather than block, since the generator
@@ -93,7 +94,7 @@ DISPLAY = {
 # Instagram and TikTok captions both allow ~2,200 characters.
 CHAR_LIMITS = {
     "bluesky": 300, "mastodon": 500, "threads": 500, "linkedin": 3000,
-    "x": 280, "instagram": 2200, "tiktok": 2200,
+    "x": 280, "instagram": 2200, "tiktok": 2200, "facebook": 63206,
 }
 
 # Minimum credentials each platform needs before it can be offered or attempted.
@@ -107,6 +108,7 @@ REQUIRED_ENV = {
     "x": ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"),
     "instagram": ("INSTAGRAM_USER_ID", "INSTAGRAM_ACCESS_TOKEN"),
     "tiktok": ("TIKTOK_ACCESS_TOKEN",),
+    "facebook": ("FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN"),
 }
 
 
@@ -474,6 +476,32 @@ def post_tiktok(text: str, media: "images.HostedImage | images.HostedVideo | Non
     return f"(TikTok publish_id {publish_id}; {note})"
 
 
+def post_facebook(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
+    # Posts to a Facebook Page via the Graph API. A Page access token minted from a
+    # long-lived user token is non-expiring, so Facebook needs no refresh machinery
+    # (like X). Image/video are fetched by Facebook from the public media URL;
+    # text-only posts need no media host.
+    import requests
+
+    page_id = require_env("FACEBOOK_PAGE_ID")
+    token = require_env("FACEBOOK_PAGE_ACCESS_TOKEN")
+    base = images.FACEBOOK_API_BASE
+
+    if media and media.kind == "video":
+        post_id = images.post_facebook_video(page_id, token, text, media.public_url, base_url=base)
+    elif media:
+        post_id = images.post_facebook_photo(page_id, token, text, media.public_url, base_url=base)
+    else:
+        resp = requests.post(
+            f"{base}/{page_id}/feed",
+            params={"message": text, "access_token": token},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        post_id = resp.json()["id"]
+    return f"https://www.facebook.com/{post_id}"
+
+
 POSTERS = {
     "bluesky": post_bluesky,
     "mastodon": post_mastodon,
@@ -482,6 +510,7 @@ POSTERS = {
     "x": post_x,
     "instagram": post_instagram,
     "tiktok": post_tiktok,
+    "facebook": post_facebook,
 }
 
 
@@ -635,19 +664,28 @@ def refresh_threads_token() -> str:
 
 
 def threads_access_token() -> str:
-    """Return a usable Threads access token, rolling it forward first if it is
-    within two days of a recorded expiry. Falls back to the stored token when no
-    expiry stamp exists yet, so nothing breaks before the first refresh.
+    """Return a usable Threads access token, keeping its 60-day window rolled
+    forward automatically.
+
+    On first use there is no recorded expiry, so we refresh once to establish the
+    `THREADS_TOKEN_EXPIRES_AT` stamp (and roll the window forward). After that we
+    refresh only within two days of expiry. A token under 24h old cannot be
+    refreshed yet; that case falls back to the stored token and retries next run.
     """
     token = os.environ.get("THREADS_ACCESS_TOKEN", "")
-    if token:
-        import time
-
-        exp = os.environ.get("THREADS_TOKEN_EXPIRES_AT", "")
-        if exp.isdigit() and time.time() >= int(exp) - 172_800:
-            return refresh_threads_token()
     if not token:
         raise PublishError(f"THREADS_ACCESS_TOKEN not set. Check {ENV_PATH}.")
+    import time
+
+    exp = os.environ.get("THREADS_TOKEN_EXPIRES_AT", "")
+    if not exp.isdigit():
+        try:
+            return refresh_threads_token()
+        except PublishError as exc:
+            print(f"  Threads: deferring first token refresh ({exc}); using token as-is.")
+            return token
+    if time.time() >= int(exp) - 172_800:
+        return refresh_threads_token()
     return token
 
 
@@ -689,19 +727,28 @@ def refresh_instagram_token() -> str:
 
 
 def instagram_access_token() -> str:
-    """Return a usable Instagram access token, rolling it forward first if it is
-    within two days of a recorded expiry. Falls back to the stored token when no
-    expiry stamp exists yet, so nothing breaks before the first refresh.
+    """Return a usable Instagram access token, keeping its 60-day window rolled
+    forward automatically.
+
+    On first use there is no recorded expiry, so we refresh once to establish the
+    `INSTAGRAM_TOKEN_EXPIRES_AT` stamp (and roll the window forward). After that we
+    refresh only within two days of expiry. A token under 24h old cannot be
+    refreshed yet; that case falls back to the stored token and retries next run.
     """
     token = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
-    if token:
-        import time
-
-        exp = os.environ.get("INSTAGRAM_TOKEN_EXPIRES_AT", "")
-        if exp.isdigit() and time.time() >= int(exp) - 172_800:
-            return refresh_instagram_token()
     if not token:
         raise PublishError(f"INSTAGRAM_ACCESS_TOKEN not set. Check {ENV_PATH}.")
+    import time
+
+    exp = os.environ.get("INSTAGRAM_TOKEN_EXPIRES_AT", "")
+    if not exp.isdigit():
+        try:
+            return refresh_instagram_token()
+        except PublishError as exc:
+            print(f"  Instagram: deferring first token refresh ({exc}); using token as-is.")
+            return token
+    if time.time() >= int(exp) - 172_800:
+        return refresh_instagram_token()
     return token
 
 

@@ -1,6 +1,6 @@
 # publish-social
 
-Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and TikTok** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
+Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, TikTok, and Facebook** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
 
 Works both as a **Claude Code skill** and as a **standalone command-line tool**. This guide assumes you have never done any of this before and walks every step.
 
@@ -15,8 +15,9 @@ Works both as a **Claude Code skill** and as a **standalone command-line tool**.
 | X / Twitter | **Paid** (~$0.015/post, $0.20 if the post has a link) | Direct upload | Moderate, and costs money |
 | Instagram | Free | Fetched from a public URL | Hard: needs a Business account + Meta App Review |
 | TikTok | Free | Fetched from a public URL | Hard: video-only, posts SELF_ONLY until an audit |
+| Facebook | Free | Fetched from a public URL | Moderate: a Page you admin; non-expiring token |
 
-Each post carries **one image or one video** (never both). You do not need all seven platforms; set up only the ones you want, and the rest are skipped automatically. Instagram and TikTok have extra gates (App Review / audit) described in their sections.
+Each post carries **one image or one video** (never both). You do not need all eight platforms; set up only the ones you want, and the rest are skipped automatically. Instagram and TikTok have extra gates (App Review / audit) described in their sections.
 
 ## Contents
 
@@ -25,7 +26,7 @@ Each post carries **one image or one video** (never both). You do not need all s
 3. [Get publish-social](#3-get-publish-social)
 4. [Create your credentials file](#4-create-your-credentials-file)
 5. [Connect your platforms](#5-connect-your-platforms)
-   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [TikTok](#tiktok)
+   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [TikTok](#tiktok) · [Facebook](#facebook)
 6. [Write your first post](#6-write-your-first-post)
 7. [Preview with a dry run](#7-preview-with-a-dry-run)
 8. [Publish for real](#8-publish-for-real)
@@ -122,7 +123,7 @@ Open `~/.config/publish-social/.env` in a text editor. It lists every setting wi
 
 ## 5. Connect your platforms
 
-For the OAuth platforms (Threads, LinkedIn, X, Instagram, TikTok), `.env` holds two kinds of value, and mixing them up is the most common mistake:
+For the OAuth platforms (Threads, LinkedIn, X, Instagram, TikTok, Facebook), `.env` holds two kinds of value, and mixing them up is the most common mistake:
 
 - **App credentials** (an id and a secret) identify your app. They are *inputs* used to get a token.
 - **Tokens** are the *result* of finishing the sign-in flow. They stay blank until you complete it.
@@ -302,42 +303,28 @@ PYEOF
 
 ### Instagram
 
-Instagram publishes through the Meta Graph API, similar to Threads, but with heavier requirements. Three things gate it:
+Instagram publishes through the Meta Graph API (the **Instagram API with Instagram Login** product). Its dashboard shows three cards — *Add permissions*, *Generate access tokens*, *Configure webhooks* — but you only need the first two, and there's a one-click way to get a token that skips the OAuth/redirect flow. Three things gate it:
 
 - A **Business or Creator account** (personal accounts cannot use the publishing API). Convert yours in the Instagram app under Settings → Account type.
-- **Meta App Review** for the `instagram_business_content_publish` permission (2–4 weeks; you submit a screencast of the publish flow).
-- **Media on every post** — Instagram has no text-only posts. Video posts go out as Reels.
+- The **`instagram_business_content_publish` permission**. Posting to your *own* account works in Development mode (with your account added as a Tester); going public needs **Meta App Review** (2–4 weeks, with a screencast).
+- **Media on every post** — Instagram has no text-only posts; video posts go out as Reels.
 
-1. At [developers.facebook.com](https://developers.facebook.com/), create a **Business** app, add the **Instagram** product, and choose **Instagram API with Instagram Login**. Put the app id and secret in `.env` (`INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`).
-2. Add the permissions `instagram_business_basic` and `instagram_business_content_publish`. Public posting needs the App Review approval; you can test with your own account while the app is in development.
-3. Set the OAuth redirect to a public URL you control (same idea as Threads), then authorize in the browser as your account and copy the `code`:
-   ```
-   https://www.instagram.com/oauth/authorize?client_id=YOUR_APP_ID&redirect_uri=https%3A%2F%2Fyourdomain.com%2F&scope=instagram_business_basic,instagram_business_content_publish&response_type=code
-   ```
-4. Exchange the code for a 60-day token and read your user id:
+1. At [developers.facebook.com](https://developers.facebook.com/), **add the Instagram product to the app you already made for Threads, or create a new Business app**, and open **API setup with Instagram Login**. It authenticates straight through Instagram and **needs no Facebook Page and no Pages API** (that's the older Facebook-Login path, which this skill does not use).
+2. **Add the publishing permission.** The permissions card lists messaging permissions (`manage_comments`, `manage_messages`) by default — ignore those; they are not for posting. Click **Go to permissions and features** and ensure `instagram_business_basic` and `instagram_business_content_publish` are added. **Skip the *Configure webhooks* card entirely** — its **Callback URL is not the OAuth redirect URI**, and webhooks are not needed to publish.
+3. **Add your account as an Instagram Tester, and accept the invite.** Being an admin of the account is not enough, and skipping the accept step causes an **"Insufficient developer role"** error. Add `@yourhandle` under the app's **Roles → Instagram Testers**, then accept the pending invite at `https://www.instagram.com/accounts/manage_access/` (logged in as that account). Role changes take ~5–10 minutes to propagate.
+4. **Generate the token the easy way:** on the *Generate access tokens* card, click **Add account**, log in, click **Allow**, then **Generate token** — it opens a one-time popup with the token; copy it immediately (shown once). That is your `INSTAGRAM_ACCESS_TOKEN` (60-day), and the number under the account name is your `INSTAGRAM_USER_ID` — no redirect URI needed. (If Generate token returns you to the dashboard with no popup, an ad blocker ate it; retry in a clean/incognito browser with extensions off.) Then confirm your user id:
    ```bash
-   uv run --with requests --with python-dotenv - << 'PYEOF'
-   import os, requests
-   from pathlib import Path
-   from dotenv import load_dotenv
-   CODE = "PASTE_CODE_HERE"               # the ?code= value, without #_
-   REDIRECT = "https://yourdomain.com/"
-   env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
-   load_dotenv(Path(env).expanduser())
-   aid, sec = os.environ["INSTAGRAM_APP_ID"], os.environ["INSTAGRAM_APP_SECRET"]
-   short = requests.post("https://api.instagram.com/oauth/access_token", data={
-       "client_id": aid, "client_secret": sec, "grant_type": "authorization_code",
-       "redirect_uri": REDIRECT, "code": CODE}).json()
-   long = requests.get("https://graph.instagram.com/access_token", params={
-       "grant_type": "ig_exchange_token", "client_secret": sec,
-       "access_token": short["access_token"]}).json()
-   tok = long["access_token"]
+   uv run --with requests - << 'PYEOF'
+   import requests
+   TOKEN = "PASTE_GENERATED_TOKEN"
    me = requests.get("https://graph.instagram.com/v23.0/me",
-                     params={"fields": "id,username", "access_token": tok}).json()
-   print(f"Add to .env:\nINSTAGRAM_USER_ID={me['id']}\nINSTAGRAM_ACCESS_TOKEN={tok}")
+                     params={"fields": "user_id,username", "access_token": TOKEN}).json()
+   print(me)   # use the user_id value for INSTAGRAM_USER_ID
    PYEOF
    ```
-   The tool refreshes this token automatically before it expires. Instagram fetches media by public URL, so it also needs the media host (see [Adding an image or video](#9-adding-an-image-or-video)).
+   Put `user_id` in `INSTAGRAM_USER_ID` and the token in `INSTAGRAM_ACCESS_TOKEN`. The tool refreshes the token automatically, and `INSTAGRAM_APP_ID`/`INSTAGRAM_APP_SECRET` are not needed for this path. Instagram fetches media by public URL, so it also needs the media host (see [Adding an image or video](#9-adding-an-image-or-video)).
+
+> **Prefer scripting it?** You can use the manual OAuth flow instead, but then the `redirect_uri` in your authorize URL must exactly match an entry under **Instagram → API setup with Instagram Login → Business login settings → OAuth redirect URIs** (this is a different field from the webhook Callback URL). The one-click token above avoids that entirely.
 
 ### TikTok
 
@@ -364,6 +351,49 @@ TikTok is **video-only**, and until your app passes TikTok's **Content Posting a
    PYEOF
    ```
    The access token lasts ~24h; with the refresh token set, the tool mints a fresh one automatically. TikTok fetches video by public URL, so it also needs the media host.
+
+### Facebook
+
+Posts to a **Facebook Page** (not a personal profile). It handles text, image, and video, and the Page token is **long-lived (non-expiring)**, so there's nothing to renew. You must be an **admin of the Page**, and you can add this to the same Meta app you use for Threads/Instagram or a separate one.
+
+1. At [developers.facebook.com](https://developers.facebook.com/), add the **Facebook Login** product to your app. Copy the **App ID** and **App Secret** (App settings → Basic) into `.env` (`FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`).
+2. The flow needs `pages_show_list`, `pages_read_engagement`, and `pages_manage_posts`. Posting to a Page **you administer** works while the app is in development; App Review for `pages_manage_posts` is only needed to go beyond your own Pages.
+3. In the [Graph API Explorer](https://developers.facebook.com/tools/explorer/): select your app, set **User Token**, add those three scopes, click **Generate Access Token → Continue**, and on the **"Choose the Pages…"** screen pick **Opt in to all current and future Pages**. Copy the token (short-lived, ~1–2h). Then exchange it for your Page's non-expiring token: set `USER_TOKEN` below and run it (leave `PAGE_ID` blank the first time).
+
+```bash
+uv run --with requests --with python-dotenv - << 'PYEOF'
+import os, requests
+from pathlib import Path
+from dotenv import load_dotenv
+USER_TOKEN = "PASTE_SHORT_LIVED_USER_TOKEN"   # from Graph API Explorer; expires ~1-2h
+PAGE_ID = ""                                  # set this only if no Page is found (see note)
+env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
+load_dotenv(Path(env).expanduser())
+G = "https://graph.facebook.com/v23.0"
+aid, sec = os.environ.get("FACEBOOK_APP_ID", ""), os.environ.get("FACEBOOK_APP_SECRET", "")
+ex = requests.get(f"{G}/oauth/access_token", params={
+    "grant_type": "fb_exchange_token", "client_id": aid, "client_secret": sec,
+    "fb_exchange_token": USER_TOKEN}).json()
+if "access_token" not in ex:
+    raise SystemExit(f"Exchange failed: {ex}")
+ll = ex["access_token"]
+if PAGE_ID:
+    p = requests.get(f"{G}/{PAGE_ID}", params={"fields": "name,access_token", "access_token": ll}).json()
+    if "access_token" not in p:
+        raise SystemExit(f"Couldn't get a token for Page {PAGE_ID}: {p}")
+    print(f"\nPage: {p['name']}\nFACEBOOK_PAGE_ID={p['id']}\nFACEBOOK_PAGE_ACCESS_TOKEN={p['access_token']}")
+else:
+    pages = requests.get(f"{G}/me/accounts", params={"access_token": ll}).json().get("data", [])
+    for p in pages:
+        print(f"\nPage: {p['name']}\nFACEBOOK_PAGE_ID={p['id']}\nFACEBOOK_PAGE_ACCESS_TOKEN={p['access_token']}")
+    if not pages:
+        print("No Pages via /me/accounts - set PAGE_ID above and re-run (see note).")
+PYEOF
+```
+
+Paste the `FACEBOOK_PAGE_ID` and `FACEBOOK_PAGE_ACCESS_TOKEN` for your Page into `.env`. The Page token does not expire. Facebook fetches image/video by public URL, so media posts need the media host (text-only Page posts don't).
+
+> **No Pages returned?** Pages on Meta's **New Pages Experience** (the ones you "switch into") usually don't appear in `/me/accounts`, even with the right permissions. Find your **Page ID** (the Page's **About → Page transparency**, or Meta Business Suite), set it as `PAGE_ID` in the snippet, and re-run. it then queries that Page's token directly. This is the most common Facebook snag.
 
 ---
 
@@ -412,8 +442,8 @@ Your Mastodon text. Up to 500 characters.
 Rules to know:
 - The text that posts is only what is **inside each fenced code block**. Anything else (the title, notes) is ignored.
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` also works.
-- Character limits: Bluesky 300, X 280, Mastodon and Threads 500, LinkedIn 3000, Instagram and TikTok 2200.
-- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, and TikTok. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
+- Character limits: Bluesky 300, X 280, Mastodon and Threads 500, LinkedIn 3000, Instagram and TikTok 2200, Facebook effectively unlimited.
+- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, TikTok, and Facebook. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
 - List the platforms you want in `platforms:`, or pass them on the command line (next steps).
 
 Write your text in each block. Leave `status: draft` and `approved: false` for now.
@@ -502,7 +532,7 @@ video-alt: "A short description of the video."
 ```
 
 - Requires **ffmpeg** (see [step 2](#2-install-the-prerequisites)). The tool checks the clip and, if needed, transcodes it to fit the strictest platform — **Bluesky: H.264 MP4, under 100 MB, 3 minutes or less**. A clip over 3 minutes is rejected so you can trim it; other formats (`.mov`, HEVC, `.webm`) are converted automatically.
-- **Bluesky, Mastodon, LinkedIn, and X** upload the video directly. **Threads, Instagram, and TikTok** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
+- **Bluesky, Mastodon, LinkedIn, and X** upload the video directly. **Threads, Instagram, TikTok, and Facebook** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
 - **Instagram** posts video as a **Reel**; **TikTok** is video-only. Both require the media host.
 
 ### Optional: auto-find an image
@@ -527,6 +557,7 @@ uv run fetch_image.py --file ~/social-posts/my-first-post.md --apply <photo_id>
 | LinkedIn | 60-day access / 365-day refresh | Nothing if you set `LINKEDIN_REFRESH_TOKEN`; otherwise re-mint the token about every 55 days |
 | Instagram | 60 days | Nothing — the tool refreshes it for you near expiry |
 | TikTok | ~24h access / ~365-day refresh | Nothing if you set `TIKTOK_REFRESH_TOKEN`; the tool mints a fresh access token whenever a run needs one |
+| Facebook | No (long-lived Page token) | Nothing; re-mint only if you change your password, revoke the app, or the Page admin changes |
 
 If a token ever leaks, revoke it in that platform's app settings, re-issue it, and update `.env`.
 

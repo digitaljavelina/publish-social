@@ -56,6 +56,9 @@ INSTAGRAM_API_BASE = "https://graph.instagram.com/v23.0"
 # TikTok Content Posting API base.
 TIKTOK_API_BASE = "https://open.tiktokapis.com/v2"
 
+# Facebook Page posting uses the Meta Graph API.
+FACEBOOK_API_BASE = "https://graph.facebook.com/v23.0"
+
 # --- Video --------------------------------------------------------------------
 # Bluesky is the binding constraint again: it caps video at 100,000,000 bytes and
 # 180 seconds and requires H.264 MP4. We target just under that so one prepared
@@ -853,6 +856,46 @@ def post_tiktok_video(
             raise RuntimeError(f"TikTok publish failed: {st.get('fail_reason') or st}")
         time.sleep(5)
     return publish_id
+
+
+def post_facebook_photo(
+    page_id: str, access_token: str, message: str, image_url: str,
+    *, base_url: str = FACEBOOK_API_BASE,
+) -> str:
+    """
+    Publish a photo to a Facebook Page from the PUBLIC image url. Facebook fetches
+    the url itself. Returns the feed post id (post_id) so the caller can build a
+    permalink.
+    """
+    import requests  # lazy
+
+    r = requests.post(
+        f"{base_url}/{page_id}/photos",
+        params={"url": image_url, "caption": message, "access_token": access_token},
+        timeout=60,
+    )
+    r.raise_for_status()
+    data = r.json()
+    return data.get("post_id") or data["id"]
+
+
+def post_facebook_video(
+    page_id: str, access_token: str, message: str, video_url: str,
+    *, base_url: str = FACEBOOK_API_BASE,
+) -> str:
+    """
+    Publish a video to a Facebook Page from the PUBLIC video url (file_url).
+    Facebook ingests and processes it server-side. Returns the video id.
+    """
+    import requests  # lazy
+
+    r = requests.post(
+        f"{base_url}/{page_id}/videos",
+        params={"file_url": video_url, "description": message, "access_token": access_token},
+        timeout=120,
+    )
+    r.raise_for_status()
+    return r.json()["id"]
 
 
 # --------------------------------------------------------------------------- #
