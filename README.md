@@ -426,6 +426,69 @@ Paste the `YOUTUBE_REFRESH_TOKEN` into `.env`. Two things to know:
 - **"Testing" mode expires refresh tokens after 7 days.** While the consent screen's **Publishing status** is *Testing*, Google expires the refresh token weekly. For hands-off posting, set it to **In production** (no Google review is required for a single-user app using only your own account).
 - **Quota.** The default YouTube Data API quota (10,000 units/day) covers about **6 uploads per day** (an upload costs ~1,600 units). That's plenty for one-file-per-run, but it's a real ceiling.
 
+#### Publish a Short — step by step
+
+Once the credentials above are in `.env`, here is the whole flow from clip to live Short. This posts to YouTube alongside any other platforms in the same file.
+
+1. **Have a Short-shaped clip.** Vertical or square, ≤180 seconds. The tool transcodes to H.264 MP4 and fits it under every platform's caps, but it never changes the aspect ratio or trims length — a landscape or >180s clip still uploads, just as a regular video, not a Short.
+
+2. **Write the post file.** Put the video next to it and add the YouTube fields. The `youtube-title:` is the title; the `## YouTube` block is the description:
+
+   ````markdown
+   ---
+   status: draft
+   approved: false
+   platforms: [youtube]
+   video: ./media/clip.mp4
+   video-alt: "What's happening in the clip, for screen readers."
+   youtube-title: "My first Short from publish-social"
+   youtube-privacy: public        # public | unlisted | private (default public)
+   ---
+
+   ## YouTube
+
+   ```
+   The description shown under the Short. Hashtags are fine here. #demo
+   ```
+
+   ## Publish Tracking
+
+   | Platform | Posted? | Date | URL | Notes |
+   |---|---|---|---|---|
+   | YouTube | ☐ | | | |
+   ````
+
+3. **See what's offerable.** Confirm YouTube has credentials and the file has a video + `## YouTube` block:
+
+   ```bash
+   uv run publish.py --file ./media/my-short.md --check
+   ```
+
+   YouTube appears in the `OFFER:` line only when both are true. (It is never offered for a post with no `video:`.)
+
+4. **Dry run.** Changes nothing; prints the title, privacy, description, and a warning if the clip is landscape (so you catch a non-Short before it goes out):
+
+   ```bash
+   uv run publish.py --file ./media/my-short.md --platforms youtube --dry-run
+   ```
+
+5. **Approve the gates.** After reviewing the dry run, set both in the frontmatter — this is the human sign-off that lets the file post:
+
+   ```yaml
+   status: ready
+   approved: true
+   ```
+
+6. **Publish for real.** Drop `--dry-run`; add `-y` to skip the confirm prompt once the dry run looks right:
+
+   ```bash
+   uv run publish.py --file ./media/my-short.md --platforms youtube
+   ```
+
+   The clip uploads directly to YouTube (no media host needed). On success the file is marked `status: posted`, stamped `published-at`, and the YouTube row in Publish Tracking is filled with the Short's URL (`https://www.youtube.com/shorts/<id>`).
+
+To post the same clip to more networks in one run, list them together — e.g. `platforms: [youtube, bluesky, instagram]` and `--platforms youtube,bluesky,instagram` — and give each its own `## <Platform>` block. The single `video:` is reused everywhere.
+
 ---
 
 ## 6. Write your first post
