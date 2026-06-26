@@ -56,6 +56,12 @@ INSTAGRAM_API_BASE = "https://graph.instagram.com/v23.0"
 # Facebook Page posting uses the Meta Graph API.
 FACEBOOK_API_BASE = "https://graph.facebook.com/v23.0"
 
+# YouTube uploads go through the Data API v3 resumable upload endpoint. A vertical
+# or square video <=180s is auto-classified as a Short; no separate "post a Short"
+# call exists. Category 22 is "People & Blogs", the safe default for a Short.
+YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+YOUTUBE_DEFAULT_CATEGORY = "22"
+
 # --- Video --------------------------------------------------------------------
 # Bluesky is the binding constraint again: it caps video at 100,000,000 bytes and
 # 180 seconds and requires H.264 MP4. We target just under that so one prepared
@@ -836,6 +842,78 @@ def post_facebook_video(
 
 
 # --------------------------------------------------------------------------- #
+# Step 4d: YouTube uploader (direct binary upload, like Bluesky/X - no host URL)
+# --------------------------------------------------------------------------- #
+
+
+def upload_youtube_video(
+    access_token: str,
+    video_path: Path,
+    *,
+    title: str,
+    description: str = "",
+    privacy: str = "public",
+    category_id: str = YOUTUBE_DEFAULT_CATEGORY,
+    tags: list[str] | None = None,
+) -> str:
+    """
+    Upload a video to YouTube via the Data API v3 resumable endpoint and return
+    its video id. Unlike Threads/Instagram/Facebook, YouTube ingests the file
+    directly, so no public media host is needed (like Bluesky/Mastodon/X).
+
+    Two steps: POST the snippet+status metadata to start a resumable session
+    (YouTube returns the session URL in the Location header), then PUT the bytes
+    to that URL in one shot. A vertical or square video <=180s is auto-classified
+    as a Short - there is no separate "Short" flag to set.
+
+    `privacy` is one of public / unlisted / private. The video is marked not
+    made-for-kids; change that here if your channel posts kids' content.
+    """
+    import requests  # lazy
+
+    data = video_path.read_bytes()
+    metadata = {
+        "snippet": {
+            "title": title,
+            "description": description or "",
+            "categoryId": category_id,
+        },
+        "status": {
+            "privacyStatus": privacy,
+            "selfDeclaredMadeForKids": False,
+        },
+    }
+    if tags:
+        metadata["snippet"]["tags"] = tags
+
+    init = requests.post(
+        YOUTUBE_UPLOAD_URL,
+        params={"uploadType": "resumable", "part": "snippet,status"},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": "video/*",
+            "X-Upload-Content-Length": str(len(data)),
+        },
+        json=metadata,
+        timeout=30,
+    )
+    init.raise_for_status()
+    upload_url = init.headers.get("Location")
+    if not upload_url:
+        raise RuntimeError("YouTube resumable upload init returned no Location URL.")
+
+    put = requests.put(
+        upload_url,
+        headers={"Content-Type": "video/*", "Content-Length": str(len(data))},
+        data=data,
+        timeout=600,
+    )
+    put.raise_for_status()
+    return put.json()["id"]
+
+
+# --------------------------------------------------------------------------- #
 # Convenience: resolve + prepare + host in one call (what publish.py will use)
 # --------------------------------------------------------------------------- #
 
@@ -854,7 +932,15 @@ class HostedVideo:
     public_url: str
     alt: str
     duration_s: float = 0.0
+    width: int = 0
+    height: int = 0
     kind: str = "video"
+
+    @property
+    def is_vertical(self) -> bool:
+        """True when the frame is portrait or square - the shape YouTube Shorts
+        (and Reels) want. Landscape video still posts, just not as a Short."""
+        return bool(self.width and self.height) and self.height >= self.width
 
 
 def resolve_prepare_and_host(
@@ -905,9 +991,16 @@ def resolve_prepare_and_host_video(
     if not alt:
         print(f"WARNING: {local_path.name} has no video-alt; posting without an alt description.")
 
-    duration = _ffprobe(ready)["duration"]
+    info = _ffprobe(ready)
     public_url = upload_to_image_host(ready, cfg, slug=post_path.stem)
-    return HostedVideo(local_path=ready, public_url=public_url, alt=alt, duration_s=duration)
+    return HostedVideo(
+        local_path=ready,
+        public_url=public_url,
+        alt=alt,
+        duration_s=info["duration"],
+        width=info["width"],
+        height=info["height"],
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -1,6 +1,6 @@
 # publish-social
 
-Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and Facebook** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
+Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, Facebook, and YouTube (Shorts)** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
 
 Works both as a **Claude Code skill** and as a **standalone command-line tool**. This guide assumes you have never done any of this before and walks every step.
 
@@ -15,8 +15,9 @@ Works both as a **Claude Code skill** and as a **standalone command-line tool**.
 | X / Twitter | **Paid** (~$0.015/post, $0.20 if the post has a link) | Direct upload | Moderate, and costs money |
 | Instagram | Free | Fetched from a public URL | Hard: needs a Business account + Meta App Review |
 | Facebook | Free | Fetched from a public URL | Moderate: a Page you admin; non-expiring token |
+| YouTube | Free | Direct upload (**video required**) | Moderate: a Google Cloud OAuth app |
 
-Each post carries **one image or one video** (never both). You do not need all seven platforms; set up only the ones you want, and the rest are skipped automatically. Instagram has an extra gate (App Review) described in its section.
+Each post carries **one image or one video** (never both). You do not need all eight platforms; set up only the ones you want, and the rest are skipped automatically. Instagram has an extra gate (App Review) described in its section. **YouTube is video-only** — it publishes the post's video as a Short, so it's only offered when the post has a `video:`.
 
 ## Contents
 
@@ -25,7 +26,7 @@ Each post carries **one image or one video** (never both). You do not need all s
 3. [Get publish-social](#3-get-publish-social)
 4. [Create your credentials file](#4-create-your-credentials-file)
 5. [Connect your platforms](#5-connect-your-platforms)
-   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [Facebook](#facebook)
+   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [Facebook](#facebook) · [YouTube](#youtube)
 6. [Write your first post](#6-write-your-first-post)
 7. [Preview with a dry run](#7-preview-with-a-dry-run)
 8. [Publish for real](#8-publish-for-real)
@@ -122,7 +123,7 @@ Open `~/.config/publish-social/.env` in a text editor. It lists every setting wi
 
 ## 5. Connect your platforms
 
-For the OAuth platforms (Threads, LinkedIn, X, Instagram, Facebook), `.env` holds two kinds of value, and mixing them up is the most common mistake:
+For the OAuth platforms (Threads, LinkedIn, X, Instagram, Facebook, YouTube), `.env` holds two kinds of value, and mixing them up is the most common mistake:
 
 - **App credentials** (an id and a secret) identify your app. They are *inputs* used to get a token.
 - **Tokens** are the *result* of finishing the sign-in flow. They stay blank until you complete it.
@@ -370,6 +371,61 @@ Paste the `FACEBOOK_PAGE_ID` and `FACEBOOK_PAGE_ACCESS_TOKEN` for your Page into
 
 > **No Pages returned?** Pages on Meta's **New Pages Experience** (the ones you "switch into") usually don't appear in `/me/accounts`, even with the right permissions. Find your **Page ID** (the Page's **About → Page transparency**, or Meta Business Suite), set it as `PAGE_ID` in the snippet, and re-run. it then queries that Page's token directly. This is the most common Facebook snag.
 
+### YouTube
+
+**Video-only.** YouTube publishes the post's `video:` as a **Short** (a vertical or square clip ≤180 seconds is classified as one automatically — there's no separate "Short" switch), uploading the file directly, so it needs **no media host**. The `youtube-title:` frontmatter field is the title; the `## YouTube` block is the description. It's only offered when the post has a video.
+
+Auth is Google OAuth 2.0. The **refresh token** is the durable credential — `publish.py` mints a ~1-hour access token from it on each run (and manages `YOUTUBE_ACCESS_TOKEN` / `YOUTUBE_TOKEN_EXPIRES_AT` itself).
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create (or pick) a project and **enable the "YouTube Data API v3"** (APIs & Services → Library).
+2. Configure the **OAuth consent screen**: user type **External**, add your Google account as a **Test user**, and add the scope `https://www.googleapis.com/auth/youtube.upload`.
+3. Create an **OAuth client ID** of type **Desktop app** (APIs & Services → Credentials → Create credentials). Copy the **Client ID** and **Client secret** into `.env` as `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.
+4. Mint a refresh token with the helper below. It opens Google's consent page in your browser, catches the redirect on `localhost`, and prints `YOUTUBE_REFRESH_TOKEN`. Run it after the client id/secret are in `.env`:
+
+```bash
+uv run --with requests --with python-dotenv - << 'PYEOF'
+import os, webbrowser, urllib.parse, http.server, requests
+from pathlib import Path
+from dotenv import load_dotenv
+env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
+load_dotenv(Path(env).expanduser())
+cid, sec = os.environ.get("YOUTUBE_CLIENT_ID", ""), os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+if not (cid and sec):
+    raise SystemExit("Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET in .env first.")
+PORT = 8765
+redirect = f"http://localhost:{PORT}/"
+auth = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
+    "client_id": cid, "redirect_uri": redirect, "response_type": "code",
+    "scope": "https://www.googleapis.com/auth/youtube.upload",
+    "access_type": "offline", "prompt": "consent"})
+print("Opening browser to authorize. If it doesn't open, visit:\n" + auth)
+webbrowser.open(auth)
+code = {}
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        q = urllib.parse.urlparse(self.path).query
+        code["v"] = urllib.parse.parse_qs(q).get("code", [""])[0]
+        self.send_response(200); self.end_headers()
+        self.wfile.write(b"Authorized. You can close this tab.")
+    def log_message(self, *a): pass
+http.server.HTTPServer(("localhost", PORT), H).handle_request()
+if not code.get("v"):
+    raise SystemExit("No authorization code received.")
+tok = requests.post("https://oauth2.googleapis.com/token", data={
+    "code": code["v"], "client_id": cid, "client_secret": sec,
+    "redirect_uri": redirect, "grant_type": "authorization_code"}).json()
+if "refresh_token" not in tok:
+    raise SystemExit(f"No refresh token returned: {tok}. Remove the app's access at "
+                     "https://myaccount.google.com/permissions and re-run (prompt=consent forces one).")
+print(f"\nYOUTUBE_REFRESH_TOKEN={tok['refresh_token']}")
+PYEOF
+```
+
+Paste the `YOUTUBE_REFRESH_TOKEN` into `.env`. Two things to know:
+
+- **"Testing" mode expires refresh tokens after 7 days.** While the consent screen's **Publishing status** is *Testing*, Google expires the refresh token weekly. For hands-off posting, set it to **In production** (no Google review is required for a single-user app using only your own account).
+- **Quota.** The default YouTube Data API quota (10,000 units/day) covers about **6 uploads per day** (an upload costs ~1,600 units). That's plenty for one-file-per-run, but it's a real ceiling.
+
 ---
 
 ## 6. Write your first post
@@ -417,8 +473,8 @@ Your Mastodon text. Up to 500 characters.
 Rules to know:
 - The text that posts is only what is **inside each fenced code block**. Anything else (the title, notes) is ignored.
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` also works.
-- Character limits: Bluesky 300, X 280 on the free tier (25,000 with X Premium), Mastodon and Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited.
-- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, and Facebook. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
+- Character limits: Bluesky 300, X 280 on the free tier (25,000 with X Premium), Mastodon and Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited, YouTube description 5000 (the title, from `youtube-title:`, is capped at 100).
+- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, Facebook, and YouTube. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
 - List the platforms you want in `platforms:`, or pass them on the command line (next steps).
 
 Write your text in each block. Leave `status: draft` and `approved: false` for now.
@@ -507,7 +563,8 @@ video-alt: "A short description of the video."
 ```
 
 - Requires **ffmpeg** (see [step 2](#2-install-the-prerequisites)). The tool checks the clip and, if needed, transcodes it to fit the strictest platform — **Bluesky: H.264 MP4, under 100 MB, 3 minutes or less**. A clip over 3 minutes is rejected so you can trim it; other formats (`.mov`, HEVC, `.webm`) are converted automatically.
-- **Bluesky, Mastodon, LinkedIn, and X** upload the video directly. **Threads, Instagram, and Facebook** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
+- **Bluesky, Mastodon, LinkedIn, X, and YouTube** upload the video directly. **Threads, Instagram, and Facebook** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
+- **YouTube is video-only and posts the clip as a Short.** Add a `youtube-title:` (the title, ≤100 chars) and put the description in the `## YouTube` block; a vertical/square clip ≤180s auto-qualifies as a Short (the dry run warns on landscape). Set visibility with `youtube-privacy:` (`public`, `unlisted`, or `private`; default `public`).
 - **Instagram** posts video as a **Reel**, and it requires the media host.
 
 ### Optional: auto-find an image
@@ -532,6 +589,7 @@ uv run fetch_image.py --file ~/social-posts/my-first-post.md --apply <photo_id>
 | LinkedIn | 60-day access / 365-day refresh | Nothing if you set `LINKEDIN_REFRESH_TOKEN`; otherwise re-mint the token about every 55 days |
 | Instagram | 60 days | Nothing — the tool refreshes it for you near expiry |
 | Facebook | No (long-lived Page token) | Nothing; re-mint only if you change your password, revoke the app, or the Page admin changes |
+| YouTube | Refresh token durable in production (7 days while the app is in "Testing") | Nothing — the tool mints an access token from the refresh token each run; set the OAuth app to "In production" so the refresh token doesn't expire weekly |
 
 If a token ever leaks, revoke it in that platform's app settings, re-issue it, and update `.env`.
 
@@ -554,6 +612,11 @@ If a token ever leaks, revoke it in that platform's app settings, re-issue it, a
 | X: a post cost $0.20 instead of $0.015 | Expected — X charges more for posts that contain a link |
 | Instagram: post rejected as text-only | Instagram has no text-only posts; add an `image:` or `video:` |
 | Instagram: media URL not accessible, or pull fails | The media host must serve the file over public HTTPS (and serve video extensions, for video). Test the URL from another network |
+| YouTube: not offered / `requires a video` | YouTube is video-only — add a `video:` to the post. It's only listed once the post has one |
+| YouTube: `youtube needs a youtube-title:` | Add a `youtube-title:` field (the Short's title, ≤100 chars) to the frontmatter |
+| YouTube: token refresh fails after ~a week | The OAuth app is still in "Testing", which expires refresh tokens after 7 days. Set the consent screen to "In production" and re-mint the refresh token |
+| YouTube: posted as a normal video, not a Short | The clip is landscape or over 180s. Shorts need a vertical/square video ≤180s (the dry run warns about this) |
+| YouTube: `quota` / `uploadLimitExceeded` | The daily Data API quota (~6 uploads) is spent; wait for the reset or request more quota in the Cloud Console |
 | `ffmpeg/ffprobe not found` | Install ffmpeg (see step 2); it is required for video |
 | Video rejected as too long (`... the cap is 180s`) | The clip is over Bluesky's 3-minute limit; trim it (the tool never auto-trims) |
 | `Post sets both image: and video:` | A post takes one or the other, not both; remove one |

@@ -13,12 +13,17 @@
 # ///
 """
 publish.py - publish a social post to Bluesky, Mastodon, Threads, LinkedIn, X,
-Instagram, and Facebook.
+Instagram, Facebook, and YouTube.
 
 Reads a Markdown post file (frontmatter plus one fenced code block per platform),
 optionally attaches one image OR one video (see images.py), publishes to the
 selected platforms, then marks the file posted and fills in its Publish Tracking
 table.
+
+YouTube is the one video-only platform: it publishes the post's `video:` as a
+Short (a vertical/square clip <=180s is auto-classified as one), using
+`youtube-title:` from the frontmatter as the title and the `## YouTube` block as
+the description.
 
 Run it with uv so dependencies resolve from the PEP 723 header above:
 
@@ -71,9 +76,10 @@ DEFAULT_POSTS_DIR = Path(
 # X posts via pay-per-use OAuth 1.0a (see the setup guide). It is the only
 # platform that costs money: ~$0.015 per text/image post, ~$0.20 if the post
 # contains a link. Posting an `x` section spends real credits.
-SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "facebook")
+SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "facebook", "youtube")
 
 # Instagram requires media (no text-only posts) and posts video as a Reel.
+# YouTube requires a video (it publishes the post's video as a Short).
 
 # Canonical display names, matching the `## Heading` and Publish Tracking table.
 DISPLAY = {
@@ -84,6 +90,7 @@ DISPLAY = {
     "x": "X",
     "instagram": "Instagram",
     "facebook": "Facebook",
+    "youtube": "YouTube",
 }
 
 # Soft character ceilings. We warn rather than block, since the generator
@@ -91,9 +98,11 @@ DISPLAY = {
 # Instagram captions allow ~2,200 characters. X's 25,000 reflects an active
 # Premium subscription (the free tier caps at 280); X enforces the real limit
 # server-side, so this only governs the dry-run warning.
+# YouTube's 5,000 governs the `## YouTube` block, which is the video DESCRIPTION;
+# the title is a separate `youtube-title:` field capped at 100 chars (checked in main).
 CHAR_LIMITS = {
     "bluesky": 300, "mastodon": 500, "threads": 500, "linkedin": 3000,
-    "x": 25_000, "instagram": 2200, "facebook": 63206,
+    "x": 25_000, "instagram": 2200, "facebook": 63206, "youtube": 5000,
 }
 
 # Minimum credentials each platform needs before it can be offered or attempted.
@@ -107,6 +116,9 @@ REQUIRED_ENV = {
     "x": ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"),
     "instagram": ("INSTAGRAM_USER_ID", "INSTAGRAM_ACCESS_TOKEN"),
     "facebook": ("FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN"),
+    # YouTube's durable credential is the refresh token (access tokens last ~1h
+    # and are minted from it per run), so that plus the OAuth client is required.
+    "youtube": ("YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN"),
 }
 
 
@@ -514,6 +526,30 @@ def post_facebook(text: str, media: "images.HostedImage | images.HostedVideo | N
     return f"https://www.facebook.com/{post_id}"
 
 
+def post_youtube(
+    text: str,
+    media: "images.HostedImage | images.HostedVideo | None",
+    *,
+    title: str,
+    privacy: str = "public",
+) -> str:
+    # Publishes the post's video as a YouTube Short via the Data API v3. YouTube
+    # ingests the file directly (like Bluesky/X), so no public media host is used.
+    # `text` is the video description; `title` and `privacy` come from frontmatter
+    # (youtube-title / youtube-privacy). A vertical or square clip <=180s is
+    # auto-classified as a Short; a landscape one posts as a regular video.
+    if not (media and media.kind == "video"):
+        raise PublishError("YouTube requires a video; this post has none.")
+
+    token = youtube_access_token()  # mints a fresh ~1h token from the refresh token
+    video_id = images.upload_youtube_video(
+        token, media.local_path, title=title, description=text, privacy=privacy
+    )
+    return f"https://www.youtube.com/shorts/{video_id}"
+
+
+# YouTube is dispatched separately (see main): it needs the title and privacy from
+# frontmatter, which the uniform (text, media) poster signature does not carry.
 POSTERS = {
     "bluesky": post_bluesky,
     "mastodon": post_mastodon,
@@ -764,6 +800,66 @@ def instagram_access_token() -> str:
 
 
 # --------------------------------------------------------------------------- #
+# YouTube (Google) token. Unlike the 60-day Meta/LinkedIn tokens, a Google access
+# token lasts only ~1 hour, but the refresh token is durable and does NOT rotate
+# on use. So the refresh token is the stored credential, and we mint a short-lived
+# access token from it, caching it in .env until it nears expiry.
+# --------------------------------------------------------------------------- #
+
+
+def refresh_youtube_token() -> str:
+    """Exchange the stored Google refresh token for a fresh ~1h access token."""
+    import time
+
+    import requests
+
+    resp = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": require_env("YOUTUBE_REFRESH_TOKEN"),
+            "client_id": require_env("YOUTUBE_CLIENT_ID"),
+            "client_secret": require_env("YOUTUBE_CLIENT_SECRET"),
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise PublishError(
+            f"YouTube token refresh failed (HTTP {resp.status_code}): {resp.text[:200]}. "
+            "The refresh token is likely expired or revoked (Google expires unused tokens, "
+            "and tokens for an app still in 'testing' mode last only 7 days). Re-authorize in "
+            "the browser to mint a new refresh token (see the YouTube setup guide)."
+        )
+    data = resp.json()
+    access = data["access_token"]
+    expires_in = int(data.get("expires_in", 0))
+    expires_at = int(time.time()) + expires_in
+    update_env_values(
+        {"YOUTUBE_ACCESS_TOKEN": access, "YOUTUBE_TOKEN_EXPIRES_AT": str(expires_at)}
+    )
+    os.environ["YOUTUBE_ACCESS_TOKEN"] = access
+    os.environ["YOUTUBE_TOKEN_EXPIRES_AT"] = str(expires_at)
+    print(f"  YouTube access token refreshed (valid ~{round(expires_in / 60)}m).")
+    return access
+
+
+def youtube_access_token() -> str:
+    """Return a usable Google access token, minting a fresh one from the refresh
+    token when the cached one is missing or within two minutes of expiry.
+
+    The refresh token (not the access token) is the durable credential, so a
+    refresh can always run as long as YOUTUBE_REFRESH_TOKEN is set.
+    """
+    import time
+
+    token = os.environ.get("YOUTUBE_ACCESS_TOKEN", "")
+    exp = os.environ.get("YOUTUBE_TOKEN_EXPIRES_AT", "")
+    if token and exp.isdigit() and time.time() < int(exp) - 120:
+        return token
+    return refresh_youtube_token()
+
+
+# --------------------------------------------------------------------------- #
 # Writing results back into the file
 # --------------------------------------------------------------------------- #
 
@@ -846,6 +942,35 @@ def choose_platforms(args: argparse.Namespace, post: Post) -> list[str]:
     if not chosen:
         raise PublishError(f"No supported platforms selected (supported: {', '.join(SUPPORTED)}).")
     return chosen
+
+
+def resolve_youtube_settings(post: Post, media) -> tuple[str, str]:
+    """Validate and return (title, privacy) for a YouTube upload.
+
+    YouTube is the one video-only platform: it publishes the post's `video:` as a
+    Short. The title comes from `youtube-title:` (required, <=100 chars, no angle
+    brackets) and privacy from `youtube-privacy:` (public/unlisted/private,
+    default public). Raises PublishError on any problem so it surfaces before
+    anything is posted, including in a dry run.
+    """
+    if not (media and media.kind == "video"):
+        raise PublishError(
+            "YouTube publishes a video as a Short, but this post has no `video:`. "
+            "Add one, or drop youtube from the platforms."
+        )
+    title = str(post.frontmatter.get("youtube-title", "")).strip()
+    if not title:
+        raise PublishError("YouTube needs a `youtube-title:` in the frontmatter (the video title).")
+    if len(title) > 100:
+        raise PublishError(f"youtube-title is {len(title)} chars; YouTube caps titles at 100.")
+    if "<" in title or ">" in title:
+        raise PublishError("youtube-title cannot contain '<' or '>' (YouTube rejects them).")
+    privacy = str(post.frontmatter.get("youtube-privacy", "public")).strip().lower()
+    if privacy not in {"public", "unlisted", "private"}:
+        raise PublishError(
+            f"youtube-privacy must be public, unlisted, or private (got {privacy!r})."
+        )
+    return title, privacy
 
 
 def confirm(platforms: list[str]) -> bool:
@@ -934,6 +1059,12 @@ def main() -> int:
     if media:
         print(f"{media.kind.capitalize()}: {media.local_path.name} -> {media.public_url}")
 
+    # YouTube is video-only and carries a title/privacy from frontmatter; validate
+    # them up front so a misconfigured post fails before anything is posted.
+    yt_title = yt_privacy = None
+    if "youtube" in platforms:
+        yt_title, yt_privacy = resolve_youtube_settings(post, media)
+
     # Build the per-platform text up front so a missing section fails before we post anything.
     texts: dict[str, str] = {}
     for p in platforms:
@@ -949,6 +1080,12 @@ def main() -> int:
             if p == "x" and find_link(text):
                 print("  note: contains a link -> X bills ~$0.20, and a real post"
                       " will require a double confirmation.")
+            if p == "youtube":
+                print(f"  title ({len(yt_title)} chars): {yt_title}")
+                print(f"  privacy: {yt_privacy}")
+                if media and media.kind == "video" and not media.is_vertical:
+                    print("  note: video is landscape; YouTube Shorts want a vertical/square "
+                          "clip <=180s, so this will post as a regular video, not a Short.")
         elif over > 0:
             print(f"  warning: {p} text is over the {CHAR_LIMITS[p]}-char limit by {over}")
         texts[p] = text
@@ -974,12 +1111,20 @@ def main() -> int:
         print("Aborted.")
         return 1
 
+    # YouTube needs the title/privacy that the uniform poster signature does not
+    # carry, so bind them here from the values validated above.
+    posters = dict(POSTERS)
+    if "youtube" in platforms:
+        posters["youtube"] = lambda text, media: post_youtube(
+            text, media, title=yt_title, privacy=yt_privacy
+        )
+
     posted: dict[str, str] = {}
     failed: dict[str, str] = {}
     for p in platforms:
         print(f"Posting to {p}...")
         try:
-            url = POSTERS[p](texts[p], media)
+            url = posters[p](texts[p], media)
             print(f"OK: {url}")
             posted[p] = url
         except Exception as exc:  # one platform failing should not lose the others
