@@ -382,7 +382,8 @@ Auth is Google OAuth 2.0. The **refresh token** is the durable credential — `p
 1. In the [Google Cloud Console](https://console.cloud.google.com/), create a **new project** (project picker at the top, then **New Project**), then enable the **YouTube Data API v3** at [console.cloud.google.com/apis/library/youtube.googleapis.com](https://console.cloud.google.com/apis/library/youtube.googleapis.com). This is **not** App Hub (a separate infrastructure product); you only need this one API.
 2. Configure the consent screen, now called the **Google Auth Platform** ([console.cloud.google.com/auth/overview](https://console.cloud.google.com/auth/overview)): set **Branding** (app name + support email), **Audience** (user type **External**, add your Google account as a **Test user**), and **Data access** (add the scope `https://www.googleapis.com/auth/youtube.upload`).
 3. Create the OAuth client under **Google Auth Platform → Clients** ([console.cloud.google.com/auth/clients](https://console.cloud.google.com/auth/clients)): **Create client**, application type **Desktop app**. Copy the **Client ID** and **Client secret** into `.env` as `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.
-4. Mint a refresh token with the helper below. It opens Google's consent page in your browser, catches the redirect on `localhost`, and prints `YOUTUBE_REFRESH_TOKEN`. Run it after the client id/secret are in `.env`:
+4. **Create your YouTube channel** (skip if you already have one). Uploads post to a channel, so the account you authorize next needs one. In Chrome, go to [youtube.com](https://www.youtube.com/) signed in as that account, click your profile picture, then **Create a channel** and confirm. It is ready immediately.
+5. Mint a refresh token with the helper below. It opens Google's consent page in Chrome, catches the redirect on `localhost`, and prints `YOUTUBE_REFRESH_TOKEN`. Sign in as the channel-owning account. Run it after the client id/secret are in `.env`:
 
 ```bash
 uv run --with requests --with python-dotenv - << 'PYEOF'
@@ -432,9 +433,8 @@ print(f"\nYOUTUBE_REFRESH_TOKEN={tok['refresh_token']}")
 PYEOF
 ```
 
-Paste the `YOUTUBE_REFRESH_TOKEN` into `.env`. Three things to know:
+Paste the `YOUTUBE_REFRESH_TOKEN` into `.env`. Two things to know:
 
-- **Sign in with the account that owns your YouTube channel.** In the consent screen's account chooser, pick the Google account whose channel you post to. If it has no channel (common with Google Workspace accounts), the token mints fine but the first upload fails with `401 youtubeSignupRequired`. Create a channel at [youtube.com](https://www.youtube.com/) (sign in, then Create a channel), or re-mint choosing the channel-owning account.
 - **"Testing" mode expires refresh tokens after 7 days.** While the **Publishing status** is *Testing* (Google Auth Platform → Audience), Google expires the refresh token weekly. For hands-off posting, set it to **In production** with **Publish app** (no Google review is required for a single-user app using only your own account).
 - **Quota.** The default YouTube Data API quota (10,000 units/day) covers about **6 uploads per day** (an upload costs ~1,600 units). That's plenty for one-file-per-run, but it's a real ceiling.
 
@@ -688,7 +688,6 @@ If a token ever leaks, revoke it in that platform's app settings, re-issue it, a
 | Instagram: post rejected as text-only | Instagram has no text-only posts; add an `image:` or `video:` |
 | Instagram: media URL not accessible, or pull fails | The media host must serve the file over public HTTPS (and serve video extensions, for video). Test the URL from another network |
 | YouTube: not offered / `requires a video` | YouTube is video-only — add a `video:` to the post. It's only listed once the post has one |
-| YouTube: upload fails `401 youtubeSignupRequired` | The Google account you authorized has no YouTube channel. Create one at youtube.com (sign in, then Create a channel), or re-mint the refresh token using the channel-owning account |
 | YouTube: `youtube needs a youtube-title:` | Add a `youtube-title:` field (the Short's title, ≤100 chars) to the frontmatter |
 | YouTube: token refresh fails after ~a week | The OAuth app is still in "Testing", which expires refresh tokens after 7 days. Set it to "In production" (Google Auth Platform → Audience → Publish app) and re-mint the refresh token |
 | YouTube: posted as a normal video, not a Short | The clip is landscape or over 180s. Shorts need a vertical/square video ≤180s (the dry run warns about this) |
