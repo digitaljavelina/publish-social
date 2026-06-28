@@ -475,7 +475,13 @@ def post_instagram(text: str, media: "images.HostedImage | images.HostedVideo | 
     token = instagram_access_token()  # rolls the 60-day token forward near expiry
     base = images.INSTAGRAM_API_BASE
 
-    if media.kind == "video":
+    if media.kind == "carousel":
+        media_id = images.post_instagram_carousel(
+            user_id, token, text,
+            [item.public_url for item in media.items],
+            base_url=base,
+        )
+    elif media.kind == "video":
         media_id = images.post_instagram_video(user_id, token, text, media.public_url, base_url=base)
     else:
         media_id = images.post_instagram_image(user_id, token, text, media.public_url, base_url=base)
@@ -812,17 +818,19 @@ def mark_posted(path: Path, posted: dict[str, str], when: datetime) -> None:
 def resolve_media(post: Post):
     has_image = bool(post.frontmatter.get("image"))
     has_video = bool(post.frontmatter.get("video"))
-    if has_image and has_video:
+    has_carousel = bool(post.frontmatter.get("carousel_images"))
+    if sum([has_image, has_video, has_carousel]) > 1:
         raise PublishError(
-            "Post sets both `image:` and `video:`. Use one or the other - Bluesky "
-            "cannot attach both, so the model is one image OR one video per post."
+            "Post sets more than one of `image:`, `video:`, `carousel_images:`. Use only one."
         )
-    if not has_image and not has_video:
+    if not has_image and not has_video and not has_carousel:
         return None
     try:
         cfg = images.ImageHostConfig.from_env()
         if has_video:
             return images.resolve_prepare_and_host_video(post.path, post.frontmatter, cfg)
+        if has_carousel:
+            return images.resolve_prepare_and_host_carousel(post.path, post.frontmatter, cfg)
         return images.resolve_prepare_and_host(post.path, post.frontmatter, cfg)
     except (
         RuntimeError, FileNotFoundError, ValueError,
@@ -932,7 +940,10 @@ def main() -> int:
 
     print(f"File: {path}")
     if media:
-        print(f"{media.kind.capitalize()}: {media.local_path.name} -> {media.public_url}")
+        if media.kind == "carousel":
+            print(f"Carousel: {len(media.items)} images -> " + ", ".join(i.public_url for i in media.items))
+        else:
+            print(f"{media.kind.capitalize()}: {media.local_path.name} -> {media.public_url}")
 
     # Build the per-platform text up front so a missing section fails before we post anything.
     texts: dict[str, str] = {}
@@ -978,8 +989,14 @@ def main() -> int:
     failed: dict[str, str] = {}
     for p in platforms:
         print(f"Posting to {p}...")
+        # Carousel is Instagram-only. Other platforms get the first image so the
+        # post still goes out with media rather than being skipped entirely.
+        effective_media = media
+        if media and media.kind == "carousel" and p != "instagram":
+            effective_media = media.items[0]
+            print(f"  note: {p} does not support carousels; using the first image only.")
         try:
-            url = POSTERS[p](texts[p], media)
+            url = POSTERS[p](texts[p], effective_media)
             print(f"OK: {url}")
             posted[p] = url
         except Exception as exc:  # one platform failing should not lose the others

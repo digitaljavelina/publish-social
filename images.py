@@ -795,6 +795,56 @@ def post_instagram_video(
     return publish.json()["id"]
 
 
+def post_instagram_carousel(
+    user_id: str, access_token: str, caption: str, image_urls: list,
+    *, base_url: str = INSTAGRAM_API_BASE,
+) -> str:
+    """Publish a carousel (2–10 images) to Instagram. Returns the published media id."""
+    import requests
+
+    if len(image_urls) < 2:
+        raise ValueError("Carousel requires at least 2 images.")
+    if len(image_urls) > 10:
+        raise ValueError("Carousel supports at most 10 images (Instagram limit).")
+
+    # Step 1: create a child container for each image (caption goes on the carousel, not children)
+    child_ids = []
+    for url in image_urls:
+        r = requests.post(
+            f"{base_url}/{user_id}/media",
+            params={"image_url": url, "is_carousel_item": "true", "access_token": access_token},
+            timeout=30,
+        )
+        r.raise_for_status()
+        child_id = r.json()["id"]
+        _wait_instagram_container(base_url, child_id, access_token, tries=20, delay=3)
+        child_ids.append(child_id)
+
+    # Step 2: create the carousel container
+    r = requests.post(
+        f"{base_url}/{user_id}/media",
+        params={
+            "media_type": "CAROUSEL",
+            "children": ",".join(child_ids),
+            "caption": caption,
+            "access_token": access_token,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    carousel_id = r.json()["id"]
+    _wait_instagram_container(base_url, carousel_id, access_token, tries=20, delay=3)
+
+    # Step 3: publish
+    publish = requests.post(
+        f"{base_url}/{user_id}/media_publish",
+        params={"creation_id": carousel_id, "access_token": access_token},
+        timeout=30,
+    )
+    publish.raise_for_status()
+    return publish.json()["id"]
+
+
 def post_facebook_photo(
     page_id: str, access_token: str, message: str, image_url: str,
     *, base_url: str = FACEBOOK_API_BASE,
@@ -857,6 +907,12 @@ class HostedVideo:
     kind: str = "video"
 
 
+@dataclass
+class HostedCarousel:
+    items: list  # list[HostedImage]
+    kind: str = "carousel"
+
+
 def resolve_prepare_and_host(
     post_path: Path, frontmatter: dict, cfg: ImageHostConfig
 ) -> HostedImage | None:
@@ -908,6 +964,47 @@ def resolve_prepare_and_host_video(
     duration = _ffprobe(ready)["duration"]
     public_url = upload_to_image_host(ready, cfg, slug=post_path.stem)
     return HostedVideo(local_path=ready, public_url=public_url, alt=alt, duration_s=duration)
+
+
+def resolve_prepare_and_host_carousel(
+    post_path: Path, frontmatter: dict, cfg: ImageHostConfig
+) -> "HostedCarousel | None":
+    """
+    Full pipeline for a post that has a `carousel_images:` field (list of paths).
+    Each image is validated, sized, and hosted. Returns None if the field is absent.
+
+    Frontmatter format:
+        carousel_images:
+          - ./media/img1.jpg
+          - ./media/img2.jpg
+        carousel_alts:
+          - "First slide description"
+          - "Second slide description"
+    """
+    carousel_field = frontmatter.get("carousel_images")
+    if not carousel_field:
+        return None
+
+    if not isinstance(carousel_field, list):
+        raise ValueError("`carousel_images` must be a YAML list of file paths.")
+
+    if len(carousel_field) < 2:
+        raise ValueError("`carousel_images` needs at least 2 images.")
+    if len(carousel_field) > 10:
+        raise ValueError("`carousel_images` supports at most 10 images (Instagram limit).")
+
+    alts = frontmatter.get("carousel_alts", [])
+    items = []
+    for i, image_ref in enumerate(carousel_field):
+        local_path = resolve_image_path(post_path, str(image_ref))
+        ready = prepare_image(local_path)
+        alt = str(alts[i]).strip() if i < len(alts) else ""
+        if not alt:
+            print(f"WARNING: carousel image {i + 1} ({local_path.name}) has no alt text.")
+        public_url = upload_to_image_host(ready, cfg, slug=f"{post_path.stem}-{i + 1}")
+        items.append(HostedImage(local_path=ready, public_url=public_url, alt=alt))
+
+    return HostedCarousel(items=items)
 
 
 # --------------------------------------------------------------------------- #
