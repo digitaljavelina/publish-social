@@ -322,11 +322,13 @@ The trade-off: it depends on X's web UI (a major redesign could require updating
    ```
    The saved file holds live login cookies — treat it like a password and never commit it. (`.gitignore` already excludes `.env`; keep this file in `~/.config/publish-social/` too.)
 
-3. **Turn on the browser transport.** In `.env`:
+3. **Turn on the browser transport.** Either set the default in `.env`:
    ```
    X_TRANSPORT=browser
    ```
-   Now `publish.py` routes X through the browser for free. In browser mode X is "configured" once the saved session exists (no API keys needed), the dry run shows a free-posting note instead of the cost warning, and the $0.20 link double-confirm is skipped because nothing is billed.
+   …or choose it per run with the `--x-transport` flag (which overrides `.env`), e.g. `uv run publish.py --file post.md --platforms x --x-transport browser`. Now `publish.py` routes X through the browser for free. In browser mode X is "configured" once the saved session exists (no API keys needed), the dry run shows a free-posting note instead of the cost warning, and the $0.20 link double-confirm is skipped because nothing is billed.
+
+   Precedence is **`--x-transport` flag → `X_TRANSPORT` in `.env` → default `api`**, so you can keep one as your standing default and override it for a single post. (Running through the Claude skill, you'll simply be asked which to use when both are set up.)
 
 You can also post directly, outside `publish.py`:
 ```bash

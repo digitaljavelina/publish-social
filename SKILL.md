@@ -77,21 +77,37 @@ Post text for Mastodon (<= 500 chars).
    choose`; then, only if they choose to pick, a `multiSelect` of the `OFFER:`
    platforms, split across two questions (each with at least two options) when more
    than four are offerable. Flag that **X spends real money** (~$0.015/post) in its
-   option description — **unless `X_TRANSPORT=browser` is set**, in which case X posts
-   free via a logged-in browser (no cost), so drop the money warning. The selection
-   becomes the `--platforms` value below.
-2. **Dry-run** the chosen platforms (changes nothing; prints per-platform text,
+   option description — but only when X would post via the paid API; if the X
+   transport for this run is the browser (see step 2), it is free, so drop the money
+   warning. The selection becomes the `--platforms` value below.
+2. **Choose the X transport (only if `x` is among the chosen platforms).** X can
+   post two ways: the paid **API**, or a **free** logged-in browser (Playwright).
+   Figure out which are available, then route accordingly:
+   - **API available?** X is in the `OFFER:` line of the plain `--check` (API creds present).
+   - **Browser available?** X is in the `OFFER:` line of `--check --x-transport browser`
+     (a saved session exists). If it is missing, the user can create one with
+     `uv run x_playwright.py login` (a one-time interactive browser sign-in).
+   - **Only one available** → use it with no question: pass nothing for API (the
+     default), or `--x-transport browser` for the browser.
+   - **Both available** → ask with AskUserQuestion which to use this run:
+     - `Free (browser)` — posts through your logged-in browser session, no cost.
+     - `Paid API (~$0.015/post, $0.20 with a link)` — uses the X developer API.
+   Whatever is chosen, pass it as `--x-transport api|browser` to **both** the
+   dry-run and the real post below (so the dry-run reflects the right transport and
+   the link/cost guardrail only fires for the API). `--x-transport` overrides
+   `X_TRANSPORT` in `.env`, so nothing needs editing for a one-off choice.
+3. **Dry-run** the chosen platforms (changes nothing; prints per-platform text,
    char counts, and whether an image is attached):
    ```bash
-   uv run publish.py --file path/to/post.md --dry-run --platforms <chosen>
+   uv run publish.py --file path/to/post.md --dry-run --platforms <chosen> [--x-transport api|browser]
    ```
    `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x,instagram,facebook`. `--auto`
    picks the most recently modified `status: ready` file in the posts dir
    (`SOCIAL_POSTS_DIR`, default `~/social-posts`).
-3. Read the dry-run back to the user; flag anything truncated or wrong.
-4. After the user confirms and the gates are set, post for real (drop `--dry-run`):
+4. Read the dry-run back to the user; flag anything truncated or wrong.
+5. After the user confirms and the gates are set, post for real (drop `--dry-run`):
    ```bash
-   uv run publish.py --file path/to/post.md --platforms <chosen>
+   uv run publish.py --file path/to/post.md --platforms <chosen> [--x-transport api|browser]
    ```
    Add `-y` to skip the interactive confirmation once the dry-run is approved. On
    success the file is marked `status: posted`, stamped `published-at`, and its

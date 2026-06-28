@@ -977,9 +977,19 @@ def main() -> int:
     parser.add_argument("--check", action="store_true",
                         help="Report which platforms have credentials (and text blocks, with a file) and print an OFFER list. Posts nothing.")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the interactive confirmation.")
+    parser.add_argument("--x-transport", choices=("api", "browser"), dest="x_transport",
+                        help="How to post X for this run: 'api' (paid) or 'browser' (free, via Playwright). "
+                             "Overrides X_TRANSPORT in .env; default is api.")
     args = parser.parse_args()
 
     load_dotenv(ENV_PATH)
+
+    # A per-run --x-transport flag overrides the env var (precedence:
+    # flag > X_TRANSPORT > default api). Setting it in the environment here means
+    # every x_transport() read - offer logic, dry-run notes, guardrail, the
+    # subprocess that posts via the browser - sees the chosen transport.
+    if args.x_transport:
+        os.environ["X_TRANSPORT"] = args.x_transport
 
     if args.check:
         return run_check(args)
@@ -1007,7 +1017,7 @@ def main() -> int:
         if args.dry_run:
             print(f"\n--- {p} ({len(text)} chars){flag} ---\n{text}")
             if p == "x" and x_transport() == "browser":
-                print("  note: X_TRANSPORT=browser -> posts free via a logged-in"
+                print("  note: browser transport -> posts free via a logged-in"
                       " browser (no API cost, no link surcharge).")
             elif p == "x" and find_link(text):
                 print("  note: contains a link -> X bills ~$0.20, and a real post"
