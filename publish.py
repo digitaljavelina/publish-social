@@ -110,8 +110,29 @@ REQUIRED_ENV = {
 }
 
 
+# X has two transports: the paid OAuth API (default), or a free browser-driven
+# path (Playwright) that reuses a logged-in session. Set X_TRANSPORT=browser to
+# post X for free. See x_playwright.py.
+def x_transport() -> str:
+    return os.environ.get("X_TRANSPORT", "api").strip().lower()
+
+
+def _x_browser_state_path() -> Path:
+    """Where x_playwright.py saves the logged-in browser session."""
+    override = os.environ.get("X_PLAYWRIGHT_STATE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "publish-social" / "x-state.json"
+
+
 def platform_configured(platform: str) -> bool:
-    """True only if every credential the platform needs is present (non-empty)."""
+    """True only if everything the platform needs to post is present.
+
+    X in browser mode is "configured" when a saved Playwright session exists,
+    not when the API keys are set - the browser path uses no API credentials.
+    """
+    if platform == "x" and x_transport() == "browser":
+        return _x_browser_state_path().is_file()
     return all(os.environ.get(k) for k in REQUIRED_ENV.get(platform, ()))
 
 
@@ -421,6 +442,45 @@ def _create_linkedin_post(
 
 
 def post_x(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
+    # Route to the free browser path or the paid API path based on X_TRANSPORT.
+    if x_transport() == "browser":
+        return post_x_browser(text, media)
+    return post_x_api(text, media)
+
+
+def post_x_browser(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
+    """Post to X for free by driving a logged-in browser via x_playwright.py.
+
+    Runs the sibling script as its own `uv` process so Playwright (a heavy dep
+    with its own browser binaries) stays isolated from publish.py - it is only
+    installed when this path is actually used. X takes a direct file upload, so
+    photos and videos attach from media.local_path, same as the API path. The
+    script prints the new post's URL on its last stdout line (--print-url).
+    """
+    import subprocess
+
+    script = Path(__file__).resolve().parent / "x_playwright.py"
+    if not script.is_file():
+        raise PublishError(f"x_playwright.py not found next to publish.py ({script}).")
+
+    cmd = ["uv", "run", "--quiet", str(script), "post", "--text", text, "--print-url"]
+    if media is not None:
+        cmd += ["--media", str(media.local_path)]
+
+    env = dict(os.environ)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = detail[-1] if detail else f"exit {proc.returncode}"
+        raise PublishError(f"X (browser) post failed: {msg}")
+
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    if not lines:
+        raise PublishError("X (browser) post produced no URL on stdout.")
+    return lines[-1].strip()
+
+
+def post_x_api(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
     # Pay-per-use posting via OAuth 1.0a user context. The four key/secret values
     # are static (minted in the X developer portal) and do not expire, so X needs
     # no refresh machinery. Posting here spends real credits: ~$0.015 for this
@@ -946,7 +1006,10 @@ def main() -> int:
         flag = f"  (OVER limit by {over})" if over > 0 else ""
         if args.dry_run:
             print(f"\n--- {p} ({len(text)} chars){flag} ---\n{text}")
-            if p == "x" and find_link(text):
+            if p == "x" and x_transport() == "browser":
+                print("  note: X_TRANSPORT=browser -> posts free via a logged-in"
+                      " browser (no API cost, no link surcharge).")
+            elif p == "x" and find_link(text):
                 print("  note: contains a link -> X bills ~$0.20, and a real post"
                       " will require a double confirmation.")
         elif over > 0:
@@ -961,7 +1024,8 @@ def main() -> int:
     # confirmation. A link bills ~$0.20 (vs ~$0.015) and is easy to include by
     # accident. Skipped entirely when X is not a target or its text has no link;
     # runs even under --yes, since a link on X must always be verified by a human.
-    if "x" in platforms:
+    # The browser transport is free, so the cost guardrail does not apply there.
+    if "x" in platforms and x_transport() != "browser":
         x_link = find_link(texts["x"])
         if x_link and not confirm_x_link(x_link):
             print("Skipping X: link not confirmed. Other platforms are unaffected.")

@@ -3,6 +3,10 @@
 *.env
 !.env.example
 
+# Saved X browser session (live login cookies) - keep it out of the repo
+x-state.json
+*-state.json
+
 # Python
 __pycache__/
 *.py[cod]

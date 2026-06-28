@@ -77,7 +77,9 @@ Post text for Mastodon (<= 500 chars).
    choose`; then, only if they choose to pick, a `multiSelect` of the `OFFER:`
    platforms, split across two questions (each with at least two options) when more
    than four are offerable. Flag that **X spends real money** (~$0.015/post) in its
-   option description. The selection becomes the `--platforms` value below.
+   option description — **unless `X_TRANSPORT=browser` is set**, in which case X posts
+   free via a logged-in browser (no cost), so drop the money warning. The selection
+   becomes the `--platforms` value below.
 2. **Dry-run** the chosen platforms (changes nothing; prints per-platform text,
    char counts, and whether an image is attached):
    ```bash
@@ -100,6 +102,12 @@ Post text for Mastodon (<= 500 chars).
 - **X costs money** (pay-per-use): about $0.015 per post, $0.20 if the post
   contains a link. The other platforms are free. Skip X by leaving its creds
   unset or omitting it from `--platforms`.
+- **Free X via browser.** Setting `X_TRANSPORT=browser` makes X post for free by
+  driving a logged-in browser with Playwright (`x_playwright.py`) instead of the
+  paid API — no API keys, no per-post cost, no link surcharge. It needs a one-time
+  `uv run x_playwright.py login` to save a session; after that X is offerable when
+  that session exists. Handles text, URLs, photos, and videos. `x_playwright.py`
+  also runs standalone (`login` / `post --text ... [--media ...]`).
 - **Instagram has setup gates.** It needs a Business/Creator account and Meta App
   Review, and has no text-only posts (a post must carry an image or video; video
   posts as a Reel). See README.md.
