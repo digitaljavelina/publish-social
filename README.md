@@ -130,6 +130,8 @@ For the OAuth platforms (Threads, LinkedIn, X, Instagram, Facebook, YouTube), `.
 
 An app id is not a user token. Do not paste app credentials into the token slots.
 
+> **Use Google Chrome for the browser sign-in steps, not Safari.** Threads, LinkedIn, X, Instagram, Facebook, and YouTube authorize in a browser, and Safari's privacy defaults (tracking prevention, popup blocking, and how it handles `localhost` redirects) quietly break these flows: popups vanish, Meta dashboards fail to save, and redirect sign-ins hang. Do them in Chrome with extensions off (or a private window). Bluesky and Mastodon are plain forms and work anywhere; the YouTube helper opens Chrome for you.
+
 Set up whichever platforms you want, then move on. Each section ends with a quick check you can run to confirm it works.
 
 ### Bluesky
@@ -205,7 +207,7 @@ This one posts as a **LinkedIn organization / Company Page**, not a personal pro
    ```
 5. On the **Products** tab, request **Community Management API** and fill out the access form. Then wait for approval.
 6. **After approval**, mint a token:
-   - Open the [token generator](https://www.linkedin.com/developers/tools/oauth/token-generator), select your app, check **`w_organization_social`** (and `r_organization_social` if offered), and request the token.
+   - In **Chrome**, open the [token generator](https://www.linkedin.com/developers/tools/oauth/token-generator), select your app, check **`w_organization_social`** (and `r_organization_social` if offered), and request the token.
    - Copy the **access token** into `LINKEDIN_ACCESS_TOKEN`. If a **refresh token** is shown, copy it into `LINKEDIN_REFRESH_TOKEN` (with it set, the tool renews the access token for you).
 7. Find your org URN: open your Company Page while logged in as admin. The admin URL contains a number, `linkedin.com/company/<NUMBER>/admin/`. Your value is:
    ```
@@ -218,7 +220,7 @@ There is no clean self-only test on LinkedIn, so treat your first dry run and fi
 
 The most involved platform; allow about an hour the first time. Every Threads token comes from a full browser sign-in flow tied to a redirect URL, even for your own account. **You need a public website URL you control** (for example a personal site, or even a free GitHub Pages page) to use as the redirect. If you do not have one, skip Threads.
 
-> **Do this on a laptop in a clean browser, not your phone.** Meta's dashboard saves via background requests that ad blockers and mobile browsers silently block, which produces misleading "form can't be saved" errors. Use desktop Chrome or Safari with extensions off, or a private window.
+> **Do this on a laptop in a clean browser, not your phone.** Meta's dashboard saves via background requests that ad blockers and mobile browsers silently block, which produces misleading "form can't be saved" errors. Use desktop **Google Chrome** with extensions off, or a private window (avoid Safari; its tracking protection is one of the blockers).
 
 1. Go to [developers.facebook.com](https://developers.facebook.com/), log in, and register as a developer if prompted.
 2. **My Apps**, then **Create App**. For the use case, pick **Access the Threads API**. Name it `publish-social`.
@@ -237,7 +239,7 @@ The most involved platform; allow about an hour the first time. Every Threads to
    THREADS_APP_SECRET=your-app-secret
    THREADS_USERNAME=your-threads-username
    ```
-8. Authorize in the browser (logged in as your Threads account), swapping in your app id:
+8. Authorize in **Chrome** (logged in as your Threads account), swapping in your app id:
    ```
    https://threads.net/oauth/authorize?client_id=YOUR_APP_ID&redirect_uri=https%3A%2F%2Fyourdomain.com%2F&scope=threads_basic,threads_content_publish&response_type=code
    ```
@@ -273,7 +275,7 @@ X is the only platform that **costs money**. New developers pay per use: about *
 
 **Character limit depends on your subscription level.** A free X account caps a post at **280 characters**; a paid **X Premium** subscription raises that to **25,000**. publish-social treats this as a soft warning only (X enforces the real cap server-side) through `CHAR_LIMITS["x"]` in `publish.py`. It ships set to **25,000** for a Premium account, so if you are on the **free tier, lower it to 280** so the dry run flags overlong posts.
 
-1. Go to the [X Developer Portal](https://developer.x.com/), sign in as the posting account, and create a **Project** and an **App** inside it (name it `publish-social`).
+1. In **Chrome**, go to the [X Developer Portal](https://developer.x.com/), sign in as the posting account, and create a **Project** and an **App** inside it (name it `publish-social`).
 2. In the Developer Console, add a payment method and enable pay-per-use. Set a monthly spending limit while you are there.
 3. Open the app's **Settings → User authentication settings** and set **App permissions** to **Read and write**. (This must be done *before* the next step.)
 4. On the **Keys and tokens** tab:
@@ -314,7 +316,7 @@ Instagram publishes through the Meta Graph API (the **Instagram API with Instagr
 1. At [developers.facebook.com](https://developers.facebook.com/), **add the Instagram product to the app you already made for Threads, or create a new Business app**, and open **API setup with Instagram Login**. It authenticates straight through Instagram and **needs no Facebook Page and no Pages API** (that's the older Facebook-Login path, which this skill does not use).
 2. **Add the publishing permission.** The permissions card lists messaging permissions (`manage_comments`, `manage_messages`) by default — ignore those; they are not for posting. Click **Go to permissions and features** and ensure `instagram_business_basic` and `instagram_business_content_publish` are added. **Skip the *Configure webhooks* card entirely** — its **Callback URL is not the OAuth redirect URI**, and webhooks are not needed to publish.
 3. **Add your account as an Instagram Tester, and accept the invite.** Being an admin of the account is not enough, and skipping the accept step causes an **"Insufficient developer role"** error. Add `@yourhandle` under the app's **Roles → Instagram Testers**, then accept the pending invite at `https://www.instagram.com/accounts/manage_access/` (logged in as that account). Role changes take ~5–10 minutes to propagate.
-4. **Generate the token the easy way:** on the *Generate access tokens* card, click **Add account**, log in, click **Allow**, then **Generate token** — it opens a one-time popup with the token; copy it immediately (shown once). That is your `INSTAGRAM_ACCESS_TOKEN` (60-day), and the number under the account name is your `INSTAGRAM_USER_ID` — no redirect URI needed. (If Generate token returns you to the dashboard with no popup, an ad blocker ate it; retry in a clean/incognito browser with extensions off.) Then confirm your user id:
+4. **Generate the token the easy way:** on the *Generate access tokens* card, click **Add account**, log in, click **Allow**, then **Generate token** — it opens a one-time popup with the token; copy it immediately (shown once). That is your `INSTAGRAM_ACCESS_TOKEN` (60-day), and the number under the account name is your `INSTAGRAM_USER_ID` — no redirect URI needed. (If Generate token returns you to the dashboard with no popup, an ad blocker or Safari ate it; retry in **Chrome** with extensions off.) Then confirm your user id:
    ```bash
    uv run --with requests - << 'PYEOF'
    import requests
@@ -334,7 +336,7 @@ Posts to a **Facebook Page** (not a personal profile). It handles text, image, a
 
 1. At [developers.facebook.com](https://developers.facebook.com/), add the **Facebook Login** product to your app. Copy the **App ID** and **App Secret** (App settings → Basic) into `.env` (`FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`).
 2. The flow needs `pages_show_list`, `pages_read_engagement`, and `pages_manage_posts`. Posting to a Page **you administer** works while the app is in development; App Review for `pages_manage_posts` is only needed to go beyond your own Pages.
-3. In the [Graph API Explorer](https://developers.facebook.com/tools/explorer/): select your app, set **User Token**, add those three scopes, click **Generate Access Token → Continue**, and on the **"Choose the Pages…"** screen pick **Opt in to all current and future Pages**. Copy the token (short-lived, ~1–2h). Then exchange it for your Page's non-expiring token: set `USER_TOKEN` below and run it (leave `PAGE_ID` blank the first time).
+3. In **Chrome**, open the [Graph API Explorer](https://developers.facebook.com/tools/explorer/): select your app, set **User Token**, add those three scopes, click **Generate Access Token → Continue**, and on the **"Choose the Pages…"** screen pick **Opt in to all current and future Pages**. Copy the token (short-lived, ~1–2h). Then exchange it for your Page's non-expiring token: set `USER_TOKEN` below and run it (leave `PAGE_ID` blank the first time).
 
 ```bash
 uv run --with requests --with python-dotenv - << 'PYEOF'
@@ -384,7 +386,7 @@ Auth is Google OAuth 2.0. The **refresh token** is the durable credential — `p
 
 ```bash
 uv run --with requests --with python-dotenv - << 'PYEOF'
-import os, webbrowser, urllib.parse, http.server, requests
+import os, sys, subprocess, webbrowser, urllib.parse, http.server, requests
 from pathlib import Path
 from dotenv import load_dotenv
 env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
@@ -398,8 +400,17 @@ auth = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(
     "client_id": cid, "redirect_uri": redirect, "response_type": "code",
     "scope": "https://www.googleapis.com/auth/youtube.upload",
     "access_type": "offline", "prompt": "consent"})
-print("Opening browser to authorize. If it doesn't open, visit:\n" + auth)
-webbrowser.open(auth)
+# Open the consent page in Chrome, not the default browser: Safari's privacy
+# settings can block the localhost redirect below. Override with BROWSER_APP.
+browser_app = os.environ.get("BROWSER_APP", "Google Chrome")
+print(f"Opening {browser_app} to authorize. If it does not open, paste this URL into Chrome:\n{auth}")
+try:
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-a", browser_app, auth], check=True)
+    else:
+        webbrowser.open(auth)
+except Exception:
+    webbrowser.open(auth)  # fall back to the default browser
 code = {}
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
