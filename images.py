@@ -944,7 +944,7 @@ class HostedVideo:
 
 
 def resolve_prepare_and_host(
-    post_path: Path, frontmatter: dict, cfg: ImageHostConfig
+    post_path: Path, frontmatter: dict, cfg: ImageHostConfig | None
 ) -> HostedImage | None:
     """
     Full pipeline for a post that has an `image:` field. Returns None for a
@@ -952,7 +952,8 @@ def resolve_prepare_and_host(
 
     publish.py calls this once, then hands the result to whichever platform
     helpers it is posting to: local_path for Bluesky/Mastodon/LinkedIn binary
-    uploads, public_url for Threads.
+    uploads, public_url for Threads. When `cfg` is None no URL-fetch platform is
+    a target, so the image is prepared but not hosted (public_url stays "").
     """
     image_field = frontmatter.get("image")
     if not image_field:
@@ -966,12 +967,12 @@ def resolve_prepare_and_host(
         # loudly rather than silently shipping an undescribed image.
         print(f"WARNING: {local_path.name} has no image-alt; posting without alt text.")
 
-    public_url = upload_to_image_host(ready, cfg, slug=post_path.stem)
+    public_url = upload_to_image_host(ready, cfg, slug=post_path.stem) if cfg is not None else ""
     return HostedImage(local_path=ready, public_url=public_url, alt=alt)
 
 
 def resolve_prepare_and_host_video(
-    post_path: Path, frontmatter: dict, cfg: ImageHostConfig
+    post_path: Path, frontmatter: dict, cfg: ImageHostConfig | None
 ) -> HostedVideo | None:
     """
     Full pipeline for a post that has a `video:` field. Returns None when there
@@ -979,7 +980,9 @@ def resolve_prepare_and_host_video(
 
     Mirrors resolve_prepare_and_host: resolve the path, transcode/size it under
     the strictest cap, then host it so Threads, Instagram, and Facebook can fetch it
-    by public URL. Bluesky/Mastodon/LinkedIn/X upload the local file directly.
+    by public URL. Bluesky/Mastodon/LinkedIn/X/YouTube upload the local file
+    directly, so when `cfg` is None (no URL-fetch platform is a target) the clip
+    is prepared but not hosted (public_url stays "").
     """
     video_field = frontmatter.get("video")
     if not video_field:
@@ -992,7 +995,7 @@ def resolve_prepare_and_host_video(
         print(f"WARNING: {local_path.name} has no video-alt; posting without an alt description.")
 
     info = _ffprobe(ready)
-    public_url = upload_to_image_host(ready, cfg, slug=post_path.stem)
+    public_url = upload_to_image_host(ready, cfg, slug=post_path.stem) if cfg is not None else ""
     return HostedVideo(
         local_path=ready,
         public_url=public_url,

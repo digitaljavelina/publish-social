@@ -905,7 +905,7 @@ def mark_posted(path: Path, posted: dict[str, str], when: datetime) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def resolve_media(post: Post):
+def resolve_media(post: Post, platforms: list[str]):
     has_image = bool(post.frontmatter.get("image"))
     has_video = bool(post.frontmatter.get("video"))
     if has_image and has_video:
@@ -915,8 +915,14 @@ def resolve_media(post: Post):
         )
     if not has_image and not has_video:
         return None
+    # Only Threads/Instagram/Facebook fetch media from a public URL; every other
+    # platform uploads the local file directly. So host (rsync) the clip only when
+    # one of those three is a target. A direct-upload-only post (e.g. YouTube,
+    # Bluesky, X) then needs no media host at all - cfg stays None and the prepared
+    # local file is used as-is.
+    needs_host = bool({"threads", "instagram", "facebook"} & set(platforms))
     try:
-        cfg = images.ImageHostConfig.from_env()
+        cfg = images.ImageHostConfig.from_env() if needs_host else None
         if has_video:
             return images.resolve_prepare_and_host_video(post.path, post.frontmatter, cfg)
         return images.resolve_prepare_and_host(post.path, post.frontmatter, cfg)
@@ -1053,11 +1059,12 @@ def main() -> int:
     post = load_post(path)
     check_gates(post)
     platforms = choose_platforms(args, post)
-    media = resolve_media(post)
+    media = resolve_media(post, platforms)
 
     print(f"File: {path}")
     if media:
-        print(f"{media.kind.capitalize()}: {media.local_path.name} -> {media.public_url}")
+        dest = media.public_url or "(direct upload; no media host needed)"
+        print(f"{media.kind.capitalize()}: {media.local_path.name} -> {dest}")
 
     # YouTube is video-only and carries a title/privacy from frontmatter; validate
     # them up front so a misconfigured post fails before anything is posted.
