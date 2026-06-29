@@ -1,9 +1,9 @@
 ---
 name: publish-social
-description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and Facebook with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image or video. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", or points at a post file and wants it live.
+description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, Facebook, and Reddit with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image or video. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", "post this to r/...", or points at a post file and wants it live.
 ---
 
-# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X / Instagram / Facebook
+# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X / Instagram / Facebook / Reddit
 
 Each social post is a Markdown file: per-platform text in fenced code blocks and
 an optional `image:` or `video:` field. `publish.py` reads a post, extracts each
@@ -32,6 +32,11 @@ approved: false        # set to true after a human reviews the content
 platforms: [bluesky, mastodon, threads, linkedin, x]
 image: ./media/example.jpg   # optional; one image (or use `video: ./media/clip.mp4` for one video instead)
 image-alt: "Describe the image for screen readers."
+# Reddit only (when posting to reddit):
+# reddit-title: "..."        # required; the post title (<=300 chars)
+# reddit-flair: "..."        # optional; matched to a subreddit flair by text
+# reddit-link: "https://..." # optional; makes it a link post instead of a self post
+# reddit-type: text|link|image|video   # optional; force a kind (default: auto from content)
 ---
 
 ## Bluesky
@@ -55,7 +60,7 @@ Post text for Mastodon (<= 500 chars).
 ````
 
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` works.
-- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited (the dry-run flags overages).
+- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited, Reddit 40,000 (the dry-run flags overages). For Reddit the `## Reddit` block is the self-post **body** (optional for link/image/video posts); the title is the separate `reddit-title:` field (≤300 chars).
 - Hashtags are fine on Bluesky, Mastodon, LinkedIn, X, Instagram, and Facebook. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
 - A post carries **one image OR one video**, never both. Use `video:` like `image:`; video needs `ffmpeg` installed and is auto-transcoded to fit Bluesky's H.264 / 100 MB / 3-minute cap.
 
@@ -78,18 +83,31 @@ Post text for Mastodon (<= 500 chars).
    platforms, split across two questions (each with at least two options) when more
    than four are offerable. Flag that **X spends real money** (~$0.015/post) in its
    option description. The selection becomes the `--platforms` value below.
-2. **Dry-run** the chosen platforms (changes nothing; prints per-platform text,
+2. **Choose the subreddit (only if `reddit` is among the chosen platforms).** A
+   Reddit post goes to one subreddit, asked for here. First read the recently-used
+   subreddits:
+   ```bash
+   uv run publish.py --reddit-recent   # prints up to the last 3, one per line (empty if none yet)
+   ```
+   Then ask with AskUserQuestion: offer those recent subreddits as options (label
+   each `r/<name>`); the tool's built-in **Other** choice lets the user type a new
+   one. If the list is empty, just have them type the subreddit via Other. Pass the
+   result as `--subreddit r/<name>` to **both** the dry-run and the real post below.
+   (The chosen subreddit is remembered automatically after a successful post.) The
+   post needs a `reddit-title:` in the frontmatter; if it's missing, ask the user
+   for a title and add it before the dry-run.
+3. **Dry-run** the chosen platforms (changes nothing; prints per-platform text,
    char counts, and whether an image is attached):
    ```bash
-   uv run publish.py --file path/to/post.md --dry-run --platforms <chosen>
+   uv run publish.py --file path/to/post.md --dry-run --platforms <chosen> [--subreddit r/<name>]
    ```
-   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x,instagram,facebook`. `--auto`
+   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x,instagram,facebook,reddit`. `--auto`
    picks the most recently modified `status: ready` file in the posts dir
    (`SOCIAL_POSTS_DIR`, default `~/social-posts`).
-3. Read the dry-run back to the user; flag anything truncated or wrong.
-4. After the user confirms and the gates are set, post for real (drop `--dry-run`):
+4. Read the dry-run back to the user; flag anything truncated or wrong.
+5. After the user confirms and the gates are set, post for real (drop `--dry-run`):
    ```bash
-   uv run publish.py --file path/to/post.md --platforms <chosen>
+   uv run publish.py --file path/to/post.md --platforms <chosen> [--subreddit r/<name>]
    ```
    Add `-y` to skip the interactive confirmation once the dry-run is approved. On
    success the file is marked `status: posted`, stamped `published-at`, and its
@@ -107,6 +125,14 @@ Post text for Mastodon (<= 500 chars).
   Graph API with a non-expiring Page token. Posting to your own Page works in the
   app's development mode; App Review for `pages_manage_posts` is only needed to go
   further. See README.md.
+- **Reddit posts to a subreddit you pick at post time** (asked via AskUserQuestion;
+  see the workflow). It's free via Reddit's API. It needs a `reddit-title:`; the
+  post kind is auto-chosen from the file — a `reddit-link:` makes a link post, else
+  a `video:`/`image:` makes a media post, else the `## Reddit` block is a self-post
+  body (force a kind with `reddit-type:`). Optional `reddit-flair:` is matched to a
+  subreddit flair by text (a no-match warns and posts without it). Image/video
+  upload directly to Reddit, no media host. The last subreddits used are
+  remembered; read them with `uv run publish.py --reddit-recent`.
 - **One image OR one video** per post, never both. Bluesky, Mastodon, LinkedIn,
   and X take a direct upload. Threads, Instagram, and Facebook fetch the media by
   public HTTPS URL, so they require the optional media host (see README.md).
