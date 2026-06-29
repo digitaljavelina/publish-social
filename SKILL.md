@@ -57,7 +57,7 @@ Post text for Mastodon (<= 500 chars).
 ````
 
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` works.
-- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited, YouTube 5000 (the dry-run flags overages). For YouTube the `## YouTube` block is the video **description**; the title is the separate `youtube-title:` field (≤100 chars).
+- Character limits: Bluesky 300, X 25,000 (Premium; lower to 280 for a free account), Mastodon/Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited, YouTube 5000 (the dry-run flags overages). For YouTube the `## YouTube` block is the video **description**; the title is the separate `youtube-title:` field (≤100 chars).
 - Hashtags are fine on Bluesky, Mastodon, LinkedIn, X, Instagram, Facebook, and YouTube. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
 - A post carries **one image OR one video**, never both. Use `video:` like `image:`; video needs `ffmpeg` installed and is auto-transcoded to fit Bluesky's H.264 / 100 MB / 3-minute cap.
 
