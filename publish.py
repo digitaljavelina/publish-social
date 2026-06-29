@@ -5,6 +5,7 @@
 #   "atproto",
 #   "Mastodon.py",
 #   "tweepy",
+#   "praw",
 #   "Pillow",
 #   "requests",
 #   "PyYAML",
@@ -13,12 +14,17 @@
 # ///
 """
 publish.py - publish a social post to Bluesky, Mastodon, Threads, LinkedIn, X,
-Instagram, and Facebook.
+Instagram, Facebook, and Reddit.
 
 Reads a Markdown post file (frontmatter plus one fenced code block per platform),
 optionally attaches one image OR one video (see images.py), publishes to the
 selected platforms, then marks the file posted and fills in its Publish Tracking
 table.
+
+Reddit is the one platform you post to a chosen destination (a subreddit): it
+takes a `reddit-title:` plus a target subreddit (`--subreddit r/...`, asked at
+post time) and submits a text, link, image, or video post depending on what the
+file carries. The last subreddits used are remembered (see --reddit-recent).
 
 Run it with uv so dependencies resolve from the PEP 723 header above:
 
@@ -71,9 +77,11 @@ DEFAULT_POSTS_DIR = Path(
 # X posts via pay-per-use OAuth 1.0a (see the setup guide). It is the only
 # platform that costs money: ~$0.015 per text/image post, ~$0.20 if the post
 # contains a link. Posting an `x` section spends real credits.
-SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "facebook")
+SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "facebook", "reddit")
 
 # Instagram requires media (no text-only posts) and posts video as a Reel.
+# Reddit needs a title and a target subreddit; the `## Reddit` block is the
+# self-post body (optional for link/image/video posts).
 
 # Canonical display names, matching the `## Heading` and Publish Tracking table.
 DISPLAY = {
@@ -84,6 +92,7 @@ DISPLAY = {
     "x": "X",
     "instagram": "Instagram",
     "facebook": "Facebook",
+    "reddit": "Reddit",
 }
 
 # Soft character ceilings. We warn rather than block, since the generator
@@ -91,9 +100,12 @@ DISPLAY = {
 # Instagram captions allow ~2,200 characters. X's 25,000 reflects an active
 # Premium subscription (the free tier caps at 280); X enforces the real limit
 # server-side, so this only governs the dry-run warning.
+# Reddit's 40,000 governs the `## Reddit` block, which is the self-post BODY;
+# the title is a separate `reddit-title:` field capped at 300 chars (checked in
+# resolve_reddit_settings).
 CHAR_LIMITS = {
     "bluesky": 300, "mastodon": 500, "threads": 500, "linkedin": 3000,
-    "x": 25_000, "instagram": 2200, "facebook": 63206,
+    "x": 25_000, "instagram": 2200, "facebook": 63206, "reddit": 40_000,
 }
 
 # Minimum credentials each platform needs before it can be offered or attempted.
@@ -107,6 +119,9 @@ REQUIRED_ENV = {
     "x": ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"),
     "instagram": ("INSTAGRAM_USER_ID", "INSTAGRAM_ACCESS_TOKEN"),
     "facebook": ("FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN"),
+    # Reddit "script" app: app id/secret plus the posting account's username and
+    # password (REDDIT_USER_AGENT is optional; a default is supplied).
+    "reddit": ("REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_USERNAME", "REDDIT_PASSWORD"),
 }
 
 
@@ -514,6 +529,68 @@ def post_facebook(text: str, media: "images.HostedImage | images.HostedVideo | N
     return f"https://www.facebook.com/{post_id}"
 
 
+def post_reddit(text: str, media: "images.HostedImage | images.HostedVideo | None", *,
+                plan: "RedditPlan") -> str:
+    """Submit one post to a subreddit via the Reddit API (PRAW), per `plan`.
+
+    Reddit submissions are exactly one kind - text (selftext), link (url), image,
+    or video - decided in resolve_reddit_settings. Image/video upload directly to
+    Reddit (no media host needed). An optional flair is matched to one of the
+    subreddit's link-flair templates by text; if none matches we warn and submit
+    without it rather than failing. Records the subreddit in the recent list on
+    success and returns the new post's permalink.
+    """
+    import praw
+
+    reddit = praw.Reddit(
+        client_id=require_env("REDDIT_CLIENT_ID"),
+        client_secret=require_env("REDDIT_CLIENT_SECRET"),
+        username=require_env("REDDIT_USERNAME"),
+        password=require_env("REDDIT_PASSWORD"),
+        user_agent=os.environ.get("REDDIT_USER_AGENT") or "publish-social/1.0",
+    )
+    reddit.validate_on_submit = True
+    sub = reddit.subreddit(plan.subreddit)
+
+    flair_kwargs = _reddit_flair_kwargs(sub, plan.flair)
+
+    if plan.kind == "link":
+        submission = sub.submit(plan.title, url=plan.url, **flair_kwargs)
+    elif plan.kind == "image":
+        submission = sub.submit_image(plan.title, str(media.local_path), **flair_kwargs)
+    elif plan.kind == "video":
+        submission = sub.submit_video(plan.title, str(media.local_path), **flair_kwargs)
+    else:  # text / self post
+        submission = sub.submit(plan.title, selftext=text, **flair_kwargs)
+
+    record_reddit_subreddit(plan.subreddit)
+    permalink = getattr(submission, "permalink", "")
+    return f"https://www.reddit.com{permalink}" if permalink else f"https://redd.it/{submission.id}"
+
+
+def _reddit_flair_kwargs(subreddit, flair: "str | None") -> dict:
+    """Resolve a flair text to PRAW submit kwargs (flair_id/flair_text).
+
+    Reddit needs a flair *template id*, so we look up the subreddit's link-flair
+    templates and match `flair` against their text (case-insensitive). If we can't
+    fetch templates or none matches, we warn and return no flair rather than
+    blocking the post - a missing flair is the human's to fix on a re-run.
+    """
+    if not flair:
+        return {}
+    try:
+        for tmpl in subreddit.flair.link_templates:
+            if (tmpl.get("text") or "").strip().lower() == flair.strip().lower():
+                return {"flair_id": tmpl["id"], "flair_text": tmpl["text"]}
+        print(f"  warning: no Reddit flair matching {flair!r} in r/{subreddit.display_name}; posting without flair.")
+    except Exception as exc:  # no permission to read templates, etc.
+        print(f"  warning: could not read flair templates for r/{subreddit.display_name} ({exc}); posting without flair.")
+    return {}
+
+
+# Reddit is dispatched separately (see main): it needs the resolved RedditPlan
+# (subreddit, title, kind, flair, url) that the uniform (text, media) signature
+# does not carry.
 POSTERS = {
     "bluesky": post_bluesky,
     "mastodon": post_mastodon,
@@ -805,6 +882,125 @@ def mark_posted(path: Path, posted: dict[str, str], when: datetime) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Reddit: target subreddit, post kind, recent-subreddit memory
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class RedditPlan:
+    subreddit: str          # without the leading "r/"
+    title: str
+    kind: str               # text | link | image | video
+    flair: str | None
+    url: str | None         # set only for link posts
+
+
+def reddit_history_path() -> Path:
+    """Where the recently-used subreddits are remembered (most-recent-first)."""
+    override = os.environ.get("REDDIT_HISTORY_FILE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "publish-social" / "reddit-subreddits.json"
+
+
+def load_reddit_history() -> list[str]:
+    """Return the saved subreddit names, most-recent-first (empty if none yet)."""
+    import json
+
+    path = reddit_history_path()
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    return [str(s) for s in data] if isinstance(data, list) else []
+
+
+def record_reddit_subreddit(name: str, *, keep: int = 10) -> None:
+    """Move `name` to the front of the recent-subreddits list (deduped, capped).
+
+    The skill reads this list (via --reddit-recent) to offer the last few
+    subreddits as quick choices. Best-effort: a write failure never fails a post.
+    """
+    import json
+
+    name = name.strip().lstrip("/").removeprefix("r/").strip("/")
+    if not name:
+        return
+    history = [s for s in load_reddit_history() if s.lower() != name.lower()]
+    history.insert(0, name)
+    history = history[:keep]
+    path = reddit_history_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _normalize_subreddit(value: str) -> str:
+    """Strip a leading r/ or /r/ and surrounding slashes from a subreddit name."""
+    return value.strip().lstrip("/").removeprefix("r/").strip("/")
+
+
+def resolve_reddit_settings(args: argparse.Namespace, post: Post, media) -> RedditPlan:
+    """Validate and assemble everything a Reddit submission needs.
+
+    Subreddit comes from --subreddit, else the file's `reddit-subreddit:` (or
+    `subreddit:`) frontmatter. Title is the required `reddit-title:` (<=300 chars).
+    The post kind is auto-detected from what the file carries - a link makes a link
+    post, otherwise a video/image makes a media post, otherwise it's a self/text
+    post - unless `reddit-type:` forces one. Flair is the optional `reddit-flair:`.
+    """
+    fm = post.frontmatter
+    raw_sub = args.subreddit or fm.get("reddit-subreddit") or fm.get("subreddit")
+    if not raw_sub:
+        raise PublishError(
+            "Reddit needs a target subreddit. Pass --subreddit r/<name> (the skill "
+            "asks for it), or set `reddit-subreddit:` in the frontmatter."
+        )
+    subreddit = _normalize_subreddit(str(raw_sub))
+    if not subreddit:
+        raise PublishError(f"Could not parse a subreddit name from {raw_sub!r}.")
+
+    title = str(fm.get("reddit-title", "")).strip()
+    if not title:
+        raise PublishError("Reddit needs a `reddit-title:` in the frontmatter (the post title).")
+    if len(title) > 300:
+        raise PublishError(f"reddit-title is {len(title)} chars; Reddit caps titles at 300.")
+
+    flair = str(fm.get("reddit-flair", "")).strip() or None
+    url = str(fm.get("reddit-link") or fm.get("link") or "").strip() or None
+
+    override = str(fm.get("reddit-type", "")).strip().lower() or None
+    if override and override not in {"text", "link", "image", "video"}:
+        raise PublishError(
+            f"reddit-type must be text, link, image, or video (got {override!r})."
+        )
+    if override:
+        kind = override
+    elif url:
+        kind = "link"
+    elif media and media.kind == "video":
+        kind = "video"
+    elif media and media.kind == "image":
+        kind = "image"
+    else:
+        kind = "text"
+
+    # Consistency checks: the chosen kind must have the input it needs.
+    if kind == "link" and not url:
+        raise PublishError("Reddit link post needs a URL; set `reddit-link:` (or `link:`).")
+    if kind == "image" and not (media and media.kind == "image"):
+        raise PublishError("Reddit image post needs an `image:`; none is set on this post.")
+    if kind == "video" and not (media and media.kind == "video"):
+        raise PublishError("Reddit video post needs a `video:`; none is set on this post.")
+
+    return RedditPlan(subreddit=subreddit, title=title, kind=kind, flair=flair, url=url)
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -884,12 +1080,17 @@ def run_check(args: argparse.Namespace) -> int:
     and, when a file is selected, the post has a `## <Platform>` text block. Prints
     a per-platform table and a final `OFFER:` comma list for building the platform
     menu. Never prints credential values.
+
+    Reddit is the exception: its required content is a `reddit-title:` (a Reddit
+    post needs a title, not necessarily a body block), so that is what gates it.
     """
     blocks = None
+    fm: dict | None = None
     try:
         path = select_file(args)
         post = load_post(path)
         blocks = {p for p in SUPPORTED if extract_post_text(post.body, p)}
+        fm = post.frontmatter
         print(f"File: {path}")
     except PublishError as exc:
         print(f"(no file selected: {exc}; reporting credentials only)")
@@ -898,7 +1099,12 @@ def run_check(args: argparse.Namespace) -> int:
     offer: list[str] = []
     for p in SUPPORTED:
         creds = platform_configured(p)
-        has_block = None if blocks is None else (p in blocks)
+        if blocks is None:
+            has_block = None
+        elif p == "reddit":
+            has_block = bool((fm or {}).get("reddit-title"))  # title is the real requirement
+        else:
+            has_block = p in blocks
         ok = creds and (True if has_block is None else has_block)
         if ok:
             offer.append(p)
@@ -917,9 +1123,18 @@ def main() -> int:
     parser.add_argument("--check", action="store_true",
                         help="Report which platforms have credentials (and text blocks, with a file) and print an OFFER list. Posts nothing.")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the interactive confirmation.")
+    parser.add_argument("--subreddit", help="Target subreddit for a Reddit post, e.g. r/test (the skill asks for this).")
+    parser.add_argument("--reddit-recent", nargs="?", type=int, const=3, default=None, metavar="N",
+                        dest="reddit_recent",
+                        help="Print the last N subreddits posted to (default 3) and exit. For building the post menu.")
     args = parser.parse_args()
 
     load_dotenv(ENV_PATH)
+
+    if args.reddit_recent is not None:
+        for name in load_reddit_history()[: max(0, args.reddit_recent)]:
+            print(name)
+        return 0
 
     if args.check:
         return run_check(args)
@@ -934,18 +1149,40 @@ def main() -> int:
     if media:
         print(f"{media.kind.capitalize()}: {media.local_path.name} -> {media.public_url}")
 
+    # Reddit needs a subreddit + title and a decided post kind; resolve and
+    # validate up front so a misconfigured post fails before anything is posted.
+    reddit_plan = None
+    if "reddit" in platforms:
+        reddit_plan = resolve_reddit_settings(args, post, media)
+        print(f"Reddit: r/{reddit_plan.subreddit} ({reddit_plan.kind} post)")
+
     # Build the per-platform text up front so a missing section fails before we post anything.
     texts: dict[str, str] = {}
     for p in platforms:
         text = extract_post_text(post.body, p)
         if not text:
-            raise PublishError(f"No '## {p.capitalize()}' code block found in {path.name}.")
+            # A Reddit link/image/video post has no body; only a self post needs one.
+            if p == "reddit" and reddit_plan and reddit_plan.kind != "text":
+                text = ""
+            else:
+                raise PublishError(f"No '## {p.capitalize()}' code block found in {path.name}.")
         if p == "threads":
             text = strip_threads_hashtags(text)  # avoid Threads' header topic-tag
         over = len(text) - CHAR_LIMITS.get(p, 10_000)
         flag = f"  (OVER limit by {over})" if over > 0 else ""
         if args.dry_run:
-            print(f"\n--- {p} ({len(text)} chars){flag} ---\n{text}")
+            label = f"\n--- {p} ({len(text)} chars){flag} ---"
+            if p == "reddit":
+                print(label + f"\n  to: r/{reddit_plan.subreddit}   kind: {reddit_plan.kind}"
+                      f"   title ({len(reddit_plan.title)} chars): {reddit_plan.title}")
+                if reddit_plan.flair:
+                    print(f"  flair: {reddit_plan.flair}")
+                if reddit_plan.kind == "link":
+                    print(f"  url: {reddit_plan.url}")
+                if reddit_plan.kind == "text":
+                    print(text or "  (no body)")
+            else:
+                print(f"{label}\n{text}")
             if p == "x" and find_link(text):
                 print("  note: contains a link -> X bills ~$0.20, and a real post"
                       " will require a double confirmation.")
@@ -974,12 +1211,18 @@ def main() -> int:
         print("Aborted.")
         return 1
 
+    # Reddit needs its resolved plan (subreddit, title, kind, flair, url) that the
+    # uniform poster signature does not carry, so bind it here.
+    posters = dict(POSTERS)
+    if "reddit" in platforms:
+        posters["reddit"] = lambda text, media: post_reddit(text, media, plan=reddit_plan)
+
     posted: dict[str, str] = {}
     failed: dict[str, str] = {}
     for p in platforms:
         print(f"Posting to {p}...")
         try:
-            url = POSTERS[p](texts[p], media)
+            url = posters[p](texts[p], media)
             print(f"OK: {url}")
             posted[p] = url
         except Exception as exc:  # one platform failing should not lose the others
