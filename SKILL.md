@@ -1,9 +1,9 @@
 ---
 name: publish-social
-description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and Facebook with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image or video. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", or points at a post file and wants it live.
+description: Publish one Markdown post to Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, Facebook, and YouTube (Shorts) with a single command. Each post is a Markdown file with one fenced code block per platform and an optional image or video. publish.py dry-runs first, posts only files gated with status:ready and approved:true, then writes the resulting URLs back into the file. Use when someone says "post this", "publish to social", "send this to Bluesky/Mastodon", "post this Short to YouTube", or points at a post file and wants it live.
 ---
 
-# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X / Instagram / Facebook
+# publish-social — one Markdown file to Bluesky / Mastodon / Threads / LinkedIn / X / Instagram / Facebook / YouTube
 
 Each social post is a Markdown file: per-platform text in fenced code blocks and
 an optional `image:` or `video:` field. `publish.py` reads a post, extracts each
@@ -32,6 +32,8 @@ approved: false        # set to true after a human reviews the content
 platforms: [bluesky, mastodon, threads, linkedin, x]
 image: ./media/example.jpg   # optional; one image (or use `video: ./media/clip.mp4` for one video instead)
 image-alt: "Describe the image for screen readers."
+# youtube-title: "..."       # required only when posting to youtube (the Short's title, <=100 chars)
+# youtube-privacy: public    # optional: public | unlisted | private (default public)
 ---
 
 ## Bluesky
@@ -55,8 +57,8 @@ Post text for Mastodon (<= 500 chars).
 ````
 
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` works.
-- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited (the dry-run flags overages).
-- Hashtags are fine on Bluesky, Mastodon, LinkedIn, X, Instagram, and Facebook. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
+- Character limits: Bluesky 300, X 280, Mastodon/Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited, YouTube 5000 (the dry-run flags overages). For YouTube the `## YouTube` block is the video **description**; the title is the separate `youtube-title:` field (≤100 chars).
+- Hashtags are fine on Bluesky, Mastodon, LinkedIn, X, Instagram, Facebook, and YouTube. Threads turns the first hashtag into a header topic tag, so `publish.py` strips hashtags from Threads text automatically.
 - A post carries **one image OR one video**, never both. Use `video:` like `image:`; video needs `ffmpeg` installed and is auto-transcoded to fit Bluesky's H.264 / 100 MB / 3-minute cap.
 
 ## Workflow
@@ -104,7 +106,7 @@ Post text for Mastodon (<= 500 chars).
    ```bash
    uv run publish.py --file path/to/post.md --dry-run --platforms <chosen> [--x-transport api|browser]
    ```
-   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x,instagram,facebook`. `--auto`
+   `--platforms` is a comma list from `bluesky,mastodon,threads,linkedin,x,instagram,facebook,youtube`. `--auto`
    picks the most recently modified `status: ready` file in the posts dir
    (`SOCIAL_POSTS_DIR`, default `~/social-posts`).
 4. Read the dry-run back to the user; flag anything truncated or wrong.
@@ -137,9 +139,18 @@ Post text for Mastodon (<= 500 chars).
   Graph API with a non-expiring Page token. Posting to your own Page works in the
   app's development mode; App Review for `pages_manage_posts` is only needed to go
   further. See README.md.
+- **YouTube is video-only.** It publishes the post's `video:` as a Short via the
+  Data API v3, using `youtube-title:` (≤100 chars, required) as the title and the
+  `## YouTube` block as the description. A vertical/square clip ≤180s is
+  auto-classified as a Short — the dry-run warns if the video is landscape (it
+  still posts, just as a regular video). It's only offered when the post has a
+  video. `youtube-privacy:` is `public` (default), `unlisted`, or `private`.
+  YouTube uploads the file directly, so it needs no media host. Setup is OAuth
+  2.0 (Google Cloud project + `youtube.upload` scope); the per-day quota allows
+  ~6 uploads. Free (no per-post cost). See README.md.
 - **One image OR one video** per post, never both. Bluesky, Mastodon, LinkedIn,
-  and X take a direct upload. Threads, Instagram, and Facebook fetch the media by
-  public HTTPS URL, so they require the optional media host (see README.md).
+  X, and YouTube take a direct upload. Threads, Instagram, and Facebook fetch the
+  media by public HTTPS URL, so they require the optional media host (see README.md).
   Text-only posting (where allowed) needs no host; video needs `ffmpeg` installed.
 - If a platform's credentials are missing, it is not offered (and `--check` omits
   it); the script never bulk-posts: one file per run.

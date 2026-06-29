@@ -1,6 +1,6 @@
 # publish-social
 
-Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, and Facebook** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
+Publish one Markdown post to **Bluesky, Mastodon, Threads, LinkedIn, X, Instagram, Facebook, and YouTube (Shorts)** with a single command. Write the post once (one fenced block per platform, one optional image or video), preview exactly what will go out, then post everywhere and get the links written back into the file.
 
 Works both as a **Claude Code skill** and as a **standalone command-line tool**. This guide assumes you have never done any of this before and walks every step.
 
@@ -15,8 +15,9 @@ Works both as a **Claude Code skill** and as a **standalone command-line tool**.
 | X / Twitter | **Paid** API (~$0.015/post, $0.20 with a link) — or **free** via a logged-in browser | Direct upload | Moderate (API), or a one-time browser login (free) |
 | Instagram | Free | Fetched from a public URL | Hard: needs a Business account + Meta App Review |
 | Facebook | Free | Fetched from a public URL | Moderate: a Page you admin; non-expiring token |
+| YouTube | Free | Direct upload (**video required**) | Moderate: a Google Cloud OAuth app |
 
-Each post carries **one image or one video** (never both). You do not need all seven platforms; set up only the ones you want, and the rest are skipped automatically. Instagram has an extra gate (App Review) described in its section.
+Each post carries **one image or one video** (never both). You do not need all eight platforms; set up only the ones you want, and the rest are skipped automatically. Instagram has an extra gate (App Review) described in its section. **YouTube is video-only** — it publishes the post's video as a Short, so it's only offered when the post has a `video:`.
 
 ## Contents
 
@@ -25,7 +26,7 @@ Each post carries **one image or one video** (never both). You do not need all s
 3. [Get publish-social](#3-get-publish-social)
 4. [Create your credentials file](#4-create-your-credentials-file)
 5. [Connect your platforms](#5-connect-your-platforms)
-   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [Facebook](#facebook)
+   - [Bluesky](#bluesky) · [Mastodon](#mastodon) · [LinkedIn](#linkedin) · [Threads](#threads) · [X / Twitter](#x--twitter) · [Instagram](#instagram) · [Facebook](#facebook) · [YouTube](#youtube)
 6. [Write your first post](#6-write-your-first-post)
 7. [Preview with a dry run](#7-preview-with-a-dry-run)
 8. [Publish for real](#8-publish-for-real)
@@ -122,12 +123,14 @@ Open `~/.config/publish-social/.env` in a text editor. It lists every setting wi
 
 ## 5. Connect your platforms
 
-For the OAuth platforms (Threads, LinkedIn, X, Instagram, Facebook), `.env` holds two kinds of value, and mixing them up is the most common mistake:
+For the OAuth platforms (Threads, LinkedIn, X, Instagram, Facebook, YouTube), `.env` holds two kinds of value, and mixing them up is the most common mistake:
 
 - **App credentials** (an id and a secret) identify your app. They are *inputs* used to get a token.
 - **Tokens** are the *result* of finishing the sign-in flow. They stay blank until you complete it.
 
 An app id is not a user token. Do not paste app credentials into the token slots.
+
+> **Use Google Chrome for the browser sign-in steps, not Safari.** Threads, LinkedIn, X, Instagram, Facebook, and YouTube authorize in a browser, and Safari's privacy defaults (tracking prevention, popup blocking, and how it handles `localhost` redirects) quietly break these flows: popups vanish, Meta dashboards fail to save, and redirect sign-ins hang. Do them in Chrome with extensions off (or a private window). Bluesky and Mastodon are plain forms and work anywhere; the YouTube helper opens Chrome for you.
 
 Set up whichever platforms you want, then move on. Each section ends with a quick check you can run to confirm it works.
 
@@ -204,7 +207,7 @@ This one posts as a **LinkedIn organization / Company Page**, not a personal pro
    ```
 5. On the **Products** tab, request **Community Management API** and fill out the access form. Then wait for approval.
 6. **After approval**, mint a token:
-   - Open the [token generator](https://www.linkedin.com/developers/tools/oauth/token-generator), select your app, check **`w_organization_social`** (and `r_organization_social` if offered), and request the token.
+   - In **Chrome**, open the [token generator](https://www.linkedin.com/developers/tools/oauth/token-generator), select your app, check **`w_organization_social`** (and `r_organization_social` if offered), and request the token.
    - Copy the **access token** into `LINKEDIN_ACCESS_TOKEN`. If a **refresh token** is shown, copy it into `LINKEDIN_REFRESH_TOKEN` (with it set, the tool renews the access token for you).
 7. Find your org URN: open your Company Page while logged in as admin. The admin URL contains a number, `linkedin.com/company/<NUMBER>/admin/`. Your value is:
    ```
@@ -217,7 +220,7 @@ There is no clean self-only test on LinkedIn, so treat your first dry run and fi
 
 The most involved platform; allow about an hour the first time. Every Threads token comes from a full browser sign-in flow tied to a redirect URL, even for your own account. **You need a public website URL you control** (for example a personal site, or even a free GitHub Pages page) to use as the redirect. If you do not have one, skip Threads.
 
-> **Do this on a laptop in a clean browser, not your phone.** Meta's dashboard saves via background requests that ad blockers and mobile browsers silently block, which produces misleading "form can't be saved" errors. Use desktop Chrome or Safari with extensions off, or a private window.
+> **Do this on a laptop in a clean browser, not your phone.** Meta's dashboard saves via background requests that ad blockers and mobile browsers silently block, which produces misleading "form can't be saved" errors. Use desktop **Google Chrome** with extensions off, or a private window (avoid Safari; its tracking protection is one of the blockers).
 
 1. Go to [developers.facebook.com](https://developers.facebook.com/), log in, and register as a developer if prompted.
 2. **My Apps**, then **Create App**. For the use case, pick **Access the Threads API**. Name it `publish-social`.
@@ -236,7 +239,7 @@ The most involved platform; allow about an hour the first time. Every Threads to
    THREADS_APP_SECRET=your-app-secret
    THREADS_USERNAME=your-threads-username
    ```
-8. Authorize in the browser (logged in as your Threads account), swapping in your app id:
+8. Authorize in **Chrome** (logged in as your Threads account), swapping in your app id:
    ```
    https://threads.net/oauth/authorize?client_id=YOUR_APP_ID&redirect_uri=https%3A%2F%2Fyourdomain.com%2F&scope=threads_basic,threads_content_publish&response_type=code
    ```
@@ -274,7 +277,7 @@ The API setup is below; skip to the browser option if you'd rather not pay or de
 
 **Character limit depends on your subscription level.** A free X account caps a post at **280 characters**; a paid **X Premium** subscription raises that to **25,000**. publish-social treats this as a soft warning only (X enforces the real cap server-side) through `CHAR_LIMITS["x"]` in `publish.py`. It ships set to **25,000** for a Premium account, so if you are on the **free tier, lower it to 280** so the dry run flags overlong posts.
 
-1. Go to the [X Developer Portal](https://developer.x.com/), sign in as the posting account, and create a **Project** and an **App** inside it (name it `publish-social`).
+1. In **Chrome**, go to the [X Developer Portal](https://developer.x.com/), sign in as the posting account, and create a **Project** and an **App** inside it (name it `publish-social`).
 2. In the Developer Console, add a payment method and enable pay-per-use. Set a monthly spending limit while you are there.
 3. Open the app's **Settings → User authentication settings** and set **App permissions** to **Read and write**. (This must be done *before* the next step.)
 4. On the **Keys and tokens** tab:
@@ -360,7 +363,7 @@ Instagram publishes through the Meta Graph API (the **Instagram API with Instagr
 1. At [developers.facebook.com](https://developers.facebook.com/), **add the Instagram product to the app you already made for Threads, or create a new Business app**, and open **API setup with Instagram Login**. It authenticates straight through Instagram and **needs no Facebook Page and no Pages API** (that's the older Facebook-Login path, which this skill does not use).
 2. **Add the publishing permission.** The permissions card lists messaging permissions (`manage_comments`, `manage_messages`) by default — ignore those; they are not for posting. Click **Go to permissions and features** and ensure `instagram_business_basic` and `instagram_business_content_publish` are added. **Skip the *Configure webhooks* card entirely** — its **Callback URL is not the OAuth redirect URI**, and webhooks are not needed to publish.
 3. **Add your account as an Instagram Tester, and accept the invite.** Being an admin of the account is not enough, and skipping the accept step causes an **"Insufficient developer role"** error. Add `@yourhandle` under the app's **Roles → Instagram Testers**, then accept the pending invite at `https://www.instagram.com/accounts/manage_access/` (logged in as that account). Role changes take ~5–10 minutes to propagate.
-4. **Generate the token the easy way:** on the *Generate access tokens* card, click **Add account**, log in, click **Allow**, then **Generate token** — it opens a one-time popup with the token; copy it immediately (shown once). That is your `INSTAGRAM_ACCESS_TOKEN` (60-day), and the number under the account name is your `INSTAGRAM_USER_ID` — no redirect URI needed. (If Generate token returns you to the dashboard with no popup, an ad blocker ate it; retry in a clean/incognito browser with extensions off.) Then confirm your user id:
+4. **Generate the token the easy way:** on the *Generate access tokens* card, click **Add account**, log in, click **Allow**, then **Generate token** — it opens a one-time popup with the token; copy it immediately (shown once). That is your `INSTAGRAM_ACCESS_TOKEN` (60-day), and the number under the account name is your `INSTAGRAM_USER_ID` — no redirect URI needed. (If Generate token returns you to the dashboard with no popup, an ad blocker or Safari ate it; retry in **Chrome** with extensions off.) Then confirm your user id:
    ```bash
    uv run --with requests - << 'PYEOF'
    import requests
@@ -380,7 +383,7 @@ Posts to a **Facebook Page** (not a personal profile). It handles text, image, a
 
 1. At [developers.facebook.com](https://developers.facebook.com/), add the **Facebook Login** product to your app. Copy the **App ID** and **App Secret** (App settings → Basic) into `.env` (`FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`).
 2. The flow needs `pages_show_list`, `pages_read_engagement`, and `pages_manage_posts`. Posting to a Page **you administer** works while the app is in development; App Review for `pages_manage_posts` is only needed to go beyond your own Pages.
-3. In the [Graph API Explorer](https://developers.facebook.com/tools/explorer/): select your app, set **User Token**, add those three scopes, click **Generate Access Token → Continue**, and on the **"Choose the Pages…"** screen pick **Opt in to all current and future Pages**. Copy the token (short-lived, ~1–2h). Then exchange it for your Page's non-expiring token: set `USER_TOKEN` below and run it (leave `PAGE_ID` blank the first time).
+3. In **Chrome**, open the [Graph API Explorer](https://developers.facebook.com/tools/explorer/): select your app, set **User Token**, add those three scopes, click **Generate Access Token → Continue**, and on the **"Choose the Pages…"** screen pick **Opt in to all current and future Pages**. Copy the token (short-lived, ~1–2h). Then exchange it for your Page's non-expiring token: set `USER_TOKEN` below and run it (leave `PAGE_ID` blank the first time).
 
 ```bash
 uv run --with requests --with python-dotenv - << 'PYEOF'
@@ -416,6 +419,134 @@ PYEOF
 Paste the `FACEBOOK_PAGE_ID` and `FACEBOOK_PAGE_ACCESS_TOKEN` for your Page into `.env`. The Page token does not expire. Facebook fetches image/video by public URL, so media posts need the media host (text-only Page posts don't).
 
 > **No Pages returned?** Pages on Meta's **New Pages Experience** (the ones you "switch into") usually don't appear in `/me/accounts`, even with the right permissions. Find your **Page ID** (the Page's **About → Page transparency**, or Meta Business Suite), set it as `PAGE_ID` in the snippet, and re-run. it then queries that Page's token directly. This is the most common Facebook snag.
+
+### YouTube
+
+**Video-only.** YouTube publishes the post's `video:` as a **Short** (a vertical or square clip ≤180 seconds is classified as one automatically — there's no separate "Short" switch), uploading the file directly, so it needs **no media host**. The `youtube-title:` frontmatter field is the title; the `## YouTube` block is the description. It's only offered when the post has a video.
+
+Auth is Google OAuth 2.0. The **refresh token** is the durable credential — `publish.py` mints a ~1-hour access token from it on each run (and manages `YOUTUBE_ACCESS_TOKEN` / `YOUTUBE_TOKEN_EXPIRES_AT` itself).
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create a **new project** (project picker at the top, then **New Project**), then enable the **YouTube Data API v3** at [console.cloud.google.com/apis/library/youtube.googleapis.com](https://console.cloud.google.com/apis/library/youtube.googleapis.com). This is **not** App Hub (a separate infrastructure product); you only need this one API.
+2. Configure the consent screen, now called the **Google Auth Platform** ([console.cloud.google.com/auth/overview](https://console.cloud.google.com/auth/overview)): set **Branding** (app name + support email), **Audience** (user type **External**, add your Google account as a **Test user**), and **Data access** (add the scope `https://www.googleapis.com/auth/youtube.upload`).
+3. Create the OAuth client under **Google Auth Platform → Clients** ([console.cloud.google.com/auth/clients](https://console.cloud.google.com/auth/clients)): **Create client**, application type **Desktop app**. Copy the **Client ID** and **Client secret** into `.env` as `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.
+4. **Create your YouTube channel** (skip if you already have one). Uploads post to a channel, so the account you authorize next needs one. In Chrome, go to [youtube.com](https://www.youtube.com/) signed in as that account, click your profile picture, then **Create a channel** and confirm. It is ready immediately.
+5. Mint a refresh token with the helper below. It opens Google's consent page in Chrome, catches the redirect on `localhost`, and prints `YOUTUBE_REFRESH_TOKEN`. Sign in as the channel-owning account. Run it after the client id/secret are in `.env`:
+
+```bash
+uv run --with requests --with python-dotenv - << 'PYEOF'
+import os, sys, subprocess, webbrowser, urllib.parse, http.server, requests
+from pathlib import Path
+from dotenv import load_dotenv
+env = os.environ.get("PUBLISH_SOCIAL_ENV", str(Path.home() / ".config/publish-social/.env"))
+load_dotenv(Path(env).expanduser())
+cid, sec = os.environ.get("YOUTUBE_CLIENT_ID", ""), os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+if not (cid and sec):
+    raise SystemExit("Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET in .env first.")
+PORT = 8765
+redirect = f"http://localhost:{PORT}/"
+auth = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
+    "client_id": cid, "redirect_uri": redirect, "response_type": "code",
+    "scope": "https://www.googleapis.com/auth/youtube.upload",
+    "access_type": "offline", "prompt": "consent"})
+# Open the consent page in Chrome, not the default browser: Safari's privacy
+# settings can block the localhost redirect below. Override with BROWSER_APP.
+browser_app = os.environ.get("BROWSER_APP", "Google Chrome")
+print(f"Opening {browser_app} to authorize. If it does not open, paste this URL into Chrome:\n{auth}")
+try:
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-a", browser_app, auth], check=True)
+    else:
+        webbrowser.open(auth)
+except Exception:
+    webbrowser.open(auth)  # fall back to the default browser
+code = {}
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        q = urllib.parse.urlparse(self.path).query
+        code["v"] = urllib.parse.parse_qs(q).get("code", [""])[0]
+        self.send_response(200); self.end_headers()
+        self.wfile.write(b"Authorized. You can close this tab.")
+    def log_message(self, *a): pass
+http.server.HTTPServer(("localhost", PORT), H).handle_request()
+if not code.get("v"):
+    raise SystemExit("No authorization code received.")
+tok = requests.post("https://oauth2.googleapis.com/token", data={
+    "code": code["v"], "client_id": cid, "client_secret": sec,
+    "redirect_uri": redirect, "grant_type": "authorization_code"}).json()
+if "refresh_token" not in tok:
+    raise SystemExit(f"No refresh token returned: {tok}. Remove the app's access at "
+                     "https://myaccount.google.com/permissions and re-run (prompt=consent forces one).")
+print(f"\nYOUTUBE_REFRESH_TOKEN={tok['refresh_token']}")
+PYEOF
+```
+
+Paste the `YOUTUBE_REFRESH_TOKEN` into `.env`. Two things to know:
+
+- **"Testing" mode expires refresh tokens after 7 days.** While the **Publishing status** is *Testing* (Google Auth Platform → Audience), Google expires the refresh token weekly. For hands-off posting, set it to **In production** with **Publish app** (no Google review is required for a single-user app using only your own account).
+- **Quota.** The default YouTube Data API quota (10,000 units/day) covers about **6 uploads per day** (an upload costs ~1,600 units). That's plenty for one-file-per-run, but it's a real ceiling.
+
+#### Publish a Short — step by step
+
+Once the credentials above are in `.env`, here is the whole flow from clip to live Short. This posts to YouTube alongside any other platforms in the same file.
+
+1. **Have a Short-shaped clip.** Vertical or square, ≤180 seconds. The tool transcodes to H.264 MP4 and fits it under every platform's caps, but it never changes the aspect ratio or trims length — a landscape or >180s clip still uploads, just as a regular video, not a Short.
+
+2. **Write the post file.** Put the video next to it and add the YouTube fields. The `youtube-title:` is the title; the `## YouTube` block is the description:
+
+   ````markdown
+   ---
+   status: draft
+   approved: false
+   platforms: [youtube]
+   video: ./media/clip.mp4
+   video-alt: "What's happening in the clip, for screen readers."
+   youtube-title: "My first Short from publish-social"
+   youtube-privacy: public        # public | unlisted | private (default public)
+   ---
+
+   ## YouTube
+
+   ```
+   The description shown under the Short. Hashtags are fine here. #demo
+   ```
+
+   ## Publish Tracking
+
+   | Platform | Posted? | Date | URL | Notes |
+   |---|---|---|---|---|
+   | YouTube | ☐ | | | |
+   ````
+
+3. **See what's offerable.** Confirm YouTube has credentials and the file has a video + `## YouTube` block:
+
+   ```bash
+   uv run publish.py --file ./media/my-short.md --check
+   ```
+
+   YouTube appears in the `OFFER:` line only when both are true. (It is never offered for a post with no `video:`.)
+
+4. **Dry run.** Changes nothing; prints the title, privacy, description, and a warning if the clip is landscape (so you catch a non-Short before it goes out):
+
+   ```bash
+   uv run publish.py --file ./media/my-short.md --platforms youtube --dry-run
+   ```
+
+5. **Approve the gates.** After reviewing the dry run, set both in the frontmatter — this is the human sign-off that lets the file post:
+
+   ```yaml
+   status: ready
+   approved: true
+   ```
+
+6. **Publish for real.** Drop `--dry-run`; add `-y` to skip the confirm prompt once the dry run looks right:
+
+   ```bash
+   uv run publish.py --file ./media/my-short.md --platforms youtube
+   ```
+
+   The clip uploads directly to YouTube (no media host needed). On success the file is marked `status: posted`, stamped `published-at`, and the YouTube row in Publish Tracking is filled with the Short's URL (`https://www.youtube.com/shorts/<id>`).
+
+To post the same clip to more networks in one run, list them together — e.g. `platforms: [youtube, bluesky, instagram]` and `--platforms youtube,bluesky,instagram` — and give each its own `## <Platform>` block. The single `video:` is reused everywhere.
 
 ---
 
@@ -464,8 +595,8 @@ Your Mastodon text. Up to 500 characters.
 Rules to know:
 - The text that posts is only what is **inside each fenced code block**. Anything else (the title, notes) is ignored.
 - The `## <Platform>` heading is matched by its first word, so `## Bluesky (~270 chars)` also works.
-- Character limits: Bluesky 300, X 280 on the free tier (25,000 with X Premium), Mastodon and Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited.
-- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, and Facebook. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
+- Character limits: Bluesky 300, X 280 on the free tier (25,000 with X Premium), Mastodon and Threads 500, LinkedIn 3000, Instagram 2200, Facebook effectively unlimited, YouTube description 5000 (the title, from `youtube-title:`, is capped at 100).
+- Hashtags work on Bluesky, Mastodon, LinkedIn, X, Instagram, Facebook, and YouTube. On Threads the first hashtag becomes a header topic, so the tool removes hashtags from Threads text for you.
 - List the platforms you want in `platforms:`, or pass them on the command line (next steps).
 
 Write your text in each block. Leave `status: draft` and `approved: false` for now.
@@ -554,7 +685,8 @@ video-alt: "A short description of the video."
 ```
 
 - Requires **ffmpeg** (see [step 2](#2-install-the-prerequisites)). The tool checks the clip and, if needed, transcodes it to fit the strictest platform — **Bluesky: H.264 MP4, under 100 MB, 3 minutes or less**. A clip over 3 minutes is rejected so you can trim it; other formats (`.mov`, HEVC, `.webm`) are converted automatically.
-- **Bluesky, Mastodon, LinkedIn, and X** upload the video directly. **Threads, Instagram, and Facebook** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
+- **Bluesky, Mastodon, LinkedIn, X, and YouTube** upload the video directly. **Threads, Instagram, and Facebook** fetch it from the public media host, so the same `IMAGE_HOST_*` settings apply — and the host must serve video files (`.mp4`, `.mov`, `.m4v`, `.webm`), not only images.
+- **YouTube is video-only and posts the clip as a Short.** Add a `youtube-title:` (the title, ≤100 chars) and put the description in the `## YouTube` block; a vertical/square clip ≤180s auto-qualifies as a Short (the dry run warns on landscape). Set visibility with `youtube-privacy:` (`public`, `unlisted`, or `private`; default `public`).
 - **Instagram** posts video as a **Reel**, and it requires the media host.
 
 ### Optional: auto-find an image
@@ -579,6 +711,7 @@ uv run fetch_image.py --file ~/social-posts/my-first-post.md --apply <photo_id>
 | LinkedIn | 60-day access / 365-day refresh | Nothing if you set `LINKEDIN_REFRESH_TOKEN`; otherwise re-mint the token about every 55 days |
 | Instagram | 60 days | Nothing — the tool refreshes it for you near expiry |
 | Facebook | No (long-lived Page token) | Nothing; re-mint only if you change your password, revoke the app, or the Page admin changes |
+| YouTube | Refresh token durable in production (7 days while the app is in "Testing") | Nothing — the tool mints an access token from the refresh token each run; set the OAuth app to "In production" so the refresh token doesn't expire weekly |
 
 If a token ever leaks, revoke it in that platform's app settings, re-issue it, and update `.env`.
 
@@ -601,6 +734,11 @@ If a token ever leaks, revoke it in that platform's app settings, re-issue it, a
 | X: a post cost $0.20 instead of $0.015 | Expected — X charges more for posts that contain a link |
 | Instagram: post rejected as text-only | Instagram has no text-only posts; add an `image:` or `video:` |
 | Instagram: media URL not accessible, or pull fails | The media host must serve the file over public HTTPS (and serve video extensions, for video). Test the URL from another network |
+| YouTube: not offered / `requires a video` | YouTube is video-only — add a `video:` to the post. It's only listed once the post has one |
+| YouTube: `youtube needs a youtube-title:` | Add a `youtube-title:` field (the Short's title, ≤100 chars) to the frontmatter |
+| YouTube: token refresh fails after ~a week | The OAuth app is still in "Testing", which expires refresh tokens after 7 days. Set it to "In production" (Google Auth Platform → Audience → Publish app) and re-mint the refresh token |
+| YouTube: posted as a normal video, not a Short | The clip is landscape or over 180s. Shorts need a vertical/square video ≤180s (the dry run warns about this) |
+| YouTube: `quota` / `uploadLimitExceeded` | The daily Data API quota (~6 uploads) is spent; wait for the reset or request more quota in the Cloud Console |
 | `ffmpeg/ffprobe not found` | Install ffmpeg (see step 2); it is required for video |
 | Video rejected as too long (`... the cap is 180s`) | The clip is over Bluesky's 3-minute limit; trim it (the tool never auto-trims) |
 | `Post sets both image: and video:` | A post takes one or the other, not both; remove one |
