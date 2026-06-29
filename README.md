@@ -12,7 +12,7 @@ Works both as a **Claude Code skill** and as a **standalone command-line tool**.
 | Mastodon | Free | Direct upload | Easy |
 | LinkedIn | Free | Direct upload | Needs a one-time API approval (days to weeks) |
 | Threads | Free | Fetched from a public URL | Most involved (a browser OAuth flow) |
-| X / Twitter | **Paid** (~$0.015/post, $0.20 if the post has a link) | Direct upload | Moderate, and costs money |
+| X / Twitter | **Paid** API (~$0.015/post, $0.20 with a link) — or **free** via a logged-in browser | Direct upload | Moderate (API), or a one-time browser login (free) |
 | Instagram | Free | Fetched from a public URL | Hard: needs a Business account + Meta App Review |
 | Facebook | Free | Fetched from a public URL | Moderate: a Page you admin; non-expiring token |
 
@@ -268,7 +268,9 @@ The most involved platform; allow about an hour the first time. Every Threads to
 
 ### X / Twitter
 
-X is the only platform that **costs money**. New developers pay per use: about **$0.015 per post**, or **$0.20 if the post contains a link**. There is no free API tier for posting. You buy credits up front and can set a spending cap.
+X has two ways to post. The **API** (below) is the default but **costs money**: about **$0.015 per post**, or **$0.20 if the post contains a link** — there is no free API tier for posting. Or you can post for **free** by driving a logged-in browser instead of the API — see **[Free posting via a browser](#x-free-posting-via-a-browser-no-api-cost)** at the end of this section. The two are interchangeable; pick one with `X_TRANSPORT`.
+
+The API setup is below; skip to the browser option if you'd rather not pay or deal with developer-portal approval.
 
 **Character limit depends on your subscription level.** A free X account caps a post at **280 characters**; a paid **X Premium** subscription raises that to **25,000**. publish-social treats this as a soft warning only (X enforces the real cap server-side) through `CHAR_LIMITS["x"]` in `publish.py`. It ships set to **25,000** for a Premium account, so if you are on the **free tier, lower it to 280** so the dry run flags overlong posts.
 
@@ -301,6 +303,51 @@ a = tweepy.OAuth1UserHandler(os.environ["X_API_KEY"], os.environ["X_API_SECRET"]
 print(f"OK X: @{tweepy.API(a).verify_credentials().screen_name}")
 PYEOF
 ```
+
+#### X: free posting via a browser (no API cost)
+
+Instead of the paid API, `x_playwright.py` posts to X by driving a real **logged-in browser** with [Playwright](https://playwright.dev/) — it types the text, attaches one photo or video, and clicks **Post**, exactly as you would by hand. No API keys, no per-post charge, and no link surcharge. It handles **text, URLs, photos, and videos** — all verified end to end, including a 36 MB `.mov`.
+
+The trade-off: it depends on X's web UI (a major redesign could require updating the selectors in `x_playwright.py`), and it needs a saved login session. The interactive `login` below is the simplest way to create one, but X aggressively rate-limits automated logins ("We've temporarily limited your login"); if you hit that, use `import-session` (step 2) instead, which sidesteps the login form entirely.
+
+1. **Install the browser** (one time). Playwright resolves automatically through `uv`; install its Chromium once:
+   ```bash
+   uv run --with playwright playwright install chromium
+   ```
+   (If your environment already provides a managed Chromium, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium` instead of installing.)
+
+2. **Log in once.** This opens a real browser window — sign in to X normally (including 2FA), and the session is saved to `~/.config/publish-social/x-state.json`:
+   ```bash
+   uv run x_playwright.py login
+   ```
+   The saved file holds live login cookies — treat it like a password and never commit it. (`.gitignore` already excludes `.env`; keep this file in `~/.config/publish-social/` too.)
+
+   **If X rate-limits the automated login** ("We've temporarily limited your login"), skip the login form entirely. Log in to x.com in your normal browser, then import those cookies into the same saved session. X defends its login flow against automation but not an already-valid session, so this sidesteps the block:
+   ```bash
+   # Paste the two cookies that matter (auth_token and ct0). Find them in your
+   # browser's DevTools > Application/Storage > Cookies > https://x.com.
+   uv run x_playwright.py import-session
+   # …or point at a cookies export (Netscape cookies.txt or a JSON array):
+   uv run x_playwright.py import-session --cookies-file ~/Downloads/x.com_cookies.txt
+   ```
+
+3. **Turn on the browser transport.** Either set the default in `.env`:
+   ```
+   X_TRANSPORT=browser
+   ```
+   …or choose it per run with the `--x-transport` flag (which overrides `.env`), e.g. `uv run publish.py --file post.md --platforms x --x-transport browser`. Now `publish.py` routes X through the browser for free. In browser mode X is "configured" once the saved session exists (no API keys needed), the dry run shows a free-posting note instead of the cost warning, and the $0.20 link double-confirm is skipped because nothing is billed.
+
+   Precedence is **`--x-transport` flag → `X_TRANSPORT` in `.env` → default `api`**, so you can keep one as your standing default and override it for a single post. (Running through the Claude skill, you'll simply be asked which to use when both are set up.)
+
+You can also post directly, outside `publish.py`:
+```bash
+uv run x_playwright.py post --text "hello, posted free from a browser"
+uv run x_playwright.py post --text "with a photo" --media ./photo.jpg
+uv run x_playwright.py post --text "with a clip"  --media ./clip.mp4
+```
+Add `--dry-run` to validate without posting, or `--headed` to watch the browser work. If posting ever fails with a "session expired" message, just run `x_playwright.py login` again.
+
+> Switching back to the paid API is just removing `X_TRANSPORT=browser` (or setting it to `api`) — your API creds keep working.
 
 ### Instagram
 
