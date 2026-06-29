@@ -14,10 +14,16 @@ entirely: it logs in once in a real browser, saves the session, then reuses it t
 type a post, attach a photo or video, and click Post - exactly as a human would,
 for free.
 
-It is a thin CLI with two subcommands:
+It is a thin CLI:
 
     # 1. One time: log in by hand and save the session (opens a real browser).
     uv run x_playwright.py login
+
+    # 1b. If X rate-limits the automated login ("We've temporarily limited your
+    #     login"), skip it: log in normally in your own browser, export the
+    #     cookies, and import them into the same saved session instead.
+    uv run x_playwright.py import-session                       # paste auth_token + ct0
+    uv run x_playwright.py import-session --cookies-file x.txt  # or a cookies export
 
     # 2. Post. Text only, or with one photo/video (urls are just text):
     uv run x_playwright.py post --text "hello from a browser, no API"
@@ -41,8 +47,11 @@ point $PLAYWRIGHT_CHROMIUM_EXECUTABLE at the binary (the common
 from __future__ import annotations
 
 import argparse
+import getpass
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 X_LOGIN_URL = "https://x.com/login"
@@ -53,6 +62,7 @@ X_COMPOSE_URL = "https://x.com/compose/post"
 # brittle text or class selectors.
 SEL_COMPOSER = '[data-testid="tweetTextarea_0"]'
 SEL_FILE_INPUT = '[data-testid="fileInput"]'
+SEL_ATTACHMENTS = '[data-testid="attachments"]'        # the media preview, once attached
 SEL_POST_BUTTON = '[data-testid="tweetButton"]'        # the modal composer's Post
 SEL_LOGGED_IN = '[data-testid="SideNav_NewTweet_Button"]'  # only present when logged in
 
@@ -145,6 +155,166 @@ def login(headless: bool = False) -> Path:
     except OSError:
         pass
     print(f"Saved X session to {dest}")
+    return dest
+
+
+# --------------------------------------------------------------------------- #
+# import-session: build the saved session from cookies you export by hand from a
+# browser where you're already logged in - no automated login at all.
+#
+# X heavily defends its *login* flow against automation (you may hit "We've
+# temporarily limited your login"). A session that is already valid is not
+# defended the same way. So rather than driving the login form, log in normally
+# in your own browser, export the cookies, and drop them into the same
+# storage_state file `post` reads. The two that matter are auth_token (the
+# session) and ct0 (the CSRF token X requires for write actions like posting).
+# --------------------------------------------------------------------------- #
+
+X_COOKIE_DOMAIN_SUFFIXES = (".x.com", ".twitter.com")
+AUTH_COOKIE = "auth_token"   # without this you are not logged in
+CSRF_COOKIE = "ct0"          # X requires this to post; it pairs with auth_token
+
+# Browser exports spell sameSite a few different ways; Playwright wants exactly
+# one of Strict / Lax / None.
+_SAME_SITE_MAP = {
+    "no_restriction": "None", "none": "None", "unspecified": "Lax",
+    "lax": "Lax", "strict": "Strict",
+}
+
+
+def _is_x_cookie(domain: str) -> bool:
+    d = domain.lower().lstrip(".")
+    return any(d == s.lstrip(".") or d.endswith(s) for s in X_COOKIE_DOMAIN_SUFFIXES)
+
+
+def _normalize_cookie(raw: dict) -> dict | None:
+    """Coerce one exported cookie into Playwright storage_state shape, or None if
+    it has no name/value to work with."""
+    name = raw.get("name")
+    value = raw.get("value")
+    if not name or value is None:
+        return None
+    # Different exporters call the expiry 'expires' or 'expirationDate', and it
+    # may be a float; a session cookie has none, which Playwright marks as -1.
+    # In Netscape cookies.txt, an expiry of 0 also means "session cookie" - take
+    # any non-positive value as -1 so Playwright doesn't drop it as expired.
+    expires = raw.get("expires", raw.get("expirationDate"))
+    try:
+        expires = int(float(expires)) if expires is not None else -1
+    except (TypeError, ValueError):
+        expires = -1
+    if expires <= 0:
+        expires = -1
+    same = _SAME_SITE_MAP.get(str(raw.get("sameSite", "")).lower(), "Lax")
+    return {
+        "name": name,
+        "value": value,
+        "domain": raw.get("domain", ".x.com"),
+        "path": raw.get("path") or "/",
+        "expires": expires,
+        "httpOnly": bool(raw.get("httpOnly", raw.get("httponly", False))),
+        "secure": bool(raw.get("secure", True)),
+        "sameSite": same,
+    }
+
+
+def _parse_cookies_file(path: Path) -> list[dict]:
+    """Parse a cookies export into normalized X cookies. Accepts either a JSON
+    array (Cookie-Editor / EditThisCookie style) or a Netscape cookies.txt."""
+    if not path.is_file():
+        raise XPlaywrightError(f"Cookies file not found: {path}")
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        raise XPlaywrightError(f"Cookies file is empty: {path}")
+
+    raw: list[dict] = []
+    if text[:1] in "[{":
+        data = json.loads(text)
+        if isinstance(data, dict):  # a full storage_state, or {"cookies": [...]}
+            data = data.get("cookies", [])
+        raw = [c for c in data if isinstance(c, dict)]
+    else:
+        # Netscape: domain \t flag \t path \t secure \t expires \t name \t value.
+        # Some tools mark httpOnly cookies with a leading "#HttpOnly_" on the line.
+        for line in text.splitlines():
+            stripped = line.strip()
+            http_only = False
+            if stripped.startswith("#HttpOnly_"):
+                stripped = stripped[len("#HttpOnly_"):]
+                http_only = True
+            elif not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split("\t")
+            if len(parts) != 7:
+                continue
+            domain, _flag, c_path, secure, expires, name, value = parts
+            raw.append({
+                "name": name, "value": value, "domain": domain, "path": c_path,
+                "secure": secure.upper() == "TRUE", "httpOnly": http_only,
+                "expires": expires,
+            })
+
+    normalized = (_normalize_cookie(c) for c in raw)
+    return [c for c in normalized if c and _is_x_cookie(c["domain"])]
+
+
+def _manual_cookie(name: str, value: str, *, http_only: bool) -> dict:
+    """Build one cookie for a value pasted by hand, with sane X-style attributes
+    and a year-out expiry so it persists rather than dying with the session."""
+    one_year = 60 * 60 * 24 * 365
+    return {
+        "name": name, "value": value, "domain": ".x.com", "path": "/",
+        "expires": int(time.time()) + one_year, "httpOnly": http_only,
+        "secure": True, "sameSite": "Lax",
+    }
+
+
+def import_session(cookies_file: Path | None = None) -> Path:
+    """Write the saved session from cookies exported from a browser you logged
+    into by hand, skipping X's automated-login defenses entirely.
+
+    With --cookies-file we parse an export (JSON array or Netscape cookies.txt)
+    and keep the X cookies. Without one, we prompt for the two values that matter
+    (auth_token and ct0); getpass keeps them off-screen and out of shell history.
+    """
+    if cookies_file is not None:
+        cookies = _parse_cookies_file(cookies_file)
+    else:
+        print(
+            "Paste the X cookies from a browser where you're logged in.\n"
+            "Find them in DevTools > Application (or Storage) > Cookies > "
+            "https://x.com\n"
+        )
+        auth = getpass.getpass(f"{AUTH_COOKIE} value: ").strip()
+        if not auth:
+            raise XPlaywrightError(f"{AUTH_COOKIE} is required - nothing imported.")
+        ct0 = getpass.getpass(f"{CSRF_COOKIE} value (press Enter to skip): ").strip()
+        cookies = [_manual_cookie(AUTH_COOKIE, auth, http_only=True)]
+        if ct0:
+            cookies.append(_manual_cookie(CSRF_COOKIE, ct0, http_only=False))
+
+    names = {c["name"] for c in cookies}
+    if AUTH_COOKIE not in names:
+        raise XPlaywrightError(
+            f"No {AUTH_COOKIE!r} cookie found, so this would not be a logged-in "
+            "session. Export cookies for x.com while signed in, and try again."
+        )
+    if CSRF_COOKIE not in names:
+        print(
+            f"Warning: no {CSRF_COOKIE!r} cookie found. Browsing will work, but "
+            "posting may fail; re-export including ct0 if it does.",
+            file=sys.stderr,
+        )
+
+    dest = state_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps({"cookies": cookies, "origins": []}, indent=2))
+    try:
+        dest.chmod(0o600)  # live login cookies - keep them private
+    except OSError:
+        pass
+    print(f"Imported {len(cookies)} X cookie(s); saved session to {dest}")
+    print("Verify with: uv run x_playwright.py post --text 'test' --dry-run")
     return dest
 
 
@@ -248,15 +418,39 @@ def _compose_and_send(page, text: str, media: Path | None) -> str:
         # The file input is present but visually hidden; set_input_files drives it
         # directly without needing the click-to-open native dialog.
         page.set_input_files(SEL_FILE_INPUT, str(media))
-        # X disables the Post button while the attachment uploads/processes. Wait
-        # for it to become enabled again - the clean "upload done" signal.
+
+        # Confirm the file actually attached: X renders a media preview. This is
+        # the load-bearing check. The Post button is ALREADY enabled by the text
+        # alone, so "Post is enabled" is NOT a valid "media is ready" signal -
+        # without this we race ahead and post text-only when the attach silently
+        # fails or hasn't registered yet.
+        try:
+            page.wait_for_selector(SEL_ATTACHMENTS, timeout=60_000)
+        except Exception as exc:
+            raise XPlaywrightError(
+                "The media never appeared in the composer, so nothing was posted. "
+                "X may have rejected the file (type, size, or length)."
+            ) from exc
+
+        # Then wait for the upload/processing to finish. X disables Post while the
+        # media uploads and re-enables it when ready, but there is a brief window
+        # right after attaching where Post is still enabled. So first wait for it
+        # to go disabled (tolerating media that uploads too fast to ever disable),
+        # then wait for it to come back enabled - the true "upload done" signal.
+        _btn_disabled = (
+            "(s) => { const b = document.querySelector(s);"
+            " return b && b.getAttribute('aria-disabled') === 'true'; }"
+        )
+        _btn_enabled = (
+            "(s) => { const b = document.querySelector(s);"
+            " return b && b.getAttribute('aria-disabled') !== 'true'; }"
+        )
+        try:
+            page.wait_for_function(_btn_disabled, arg=SEL_POST_BUTTON, timeout=10_000)
+        except Exception:
+            pass  # a small/fast upload may never visibly disable the button
         page.wait_for_function(
-            """(sel) => {
-                const b = document.querySelector(sel);
-                return b && b.getAttribute('aria-disabled') !== 'true';
-            }""",
-            arg=SEL_POST_BUTTON,
-            timeout=MEDIA_UPLOAD_TIMEOUT_MS,
+            _btn_enabled, arg=SEL_POST_BUTTON, timeout=MEDIA_UPLOAD_TIMEOUT_MS
         )
 
     # Click Post and capture X's CreateTweet response in the same step, so we can
@@ -307,6 +501,16 @@ def main() -> int:
         help="Advanced: run headless (you usually want a visible window to log in).",
     )
 
+    p_import = sub.add_parser(
+        "import-session",
+        help="Build the session from cookies exported from your own logged-in browser (no automated login).",
+    )
+    p_import.add_argument(
+        "--cookies-file",
+        help="Path to a cookies export (Netscape cookies.txt or JSON array). "
+             "If omitted, you'll be prompted to paste auth_token and ct0.",
+    )
+
     p_post = sub.add_parser("post", help="Compose and send one post.")
     p_post.add_argument("--text", required=True, help="The post text (urls are just text).")
     p_post.add_argument("--media", help="Optional path to one photo or video to attach.")
@@ -321,6 +525,13 @@ def main() -> int:
 
     if args.command == "login":
         login(headless=args.headless)
+        return 0
+
+    if args.command == "import-session":
+        cookies_file = (
+            Path(args.cookies_file).expanduser() if args.cookies_file else None
+        )
+        import_session(cookies_file=cookies_file)
         return 0
 
     if args.command == "post":

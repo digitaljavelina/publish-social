@@ -122,8 +122,11 @@ Post text for Mastodon (<= 500 chars).
   driving a logged-in browser with Playwright (`x_playwright.py`) instead of the
   paid API — no API keys, no per-post cost, no link surcharge. It needs a one-time
   `uv run x_playwright.py login` to save a session; after that X is offerable when
-  that session exists. Handles text, URLs, photos, and videos. `x_playwright.py`
-  also runs standalone (`login` / `post --text ... [--media ...]`).
+  that session exists. If X rate-limits the automated login, use
+  `uv run x_playwright.py import-session` to import cookies from a browser the user
+  already logged into (sidesteps X's login-flow bot detection). Handles text, URLs,
+  photos, and videos. `x_playwright.py` also runs standalone
+  (`login` / `import-session` / `post --text ... [--media ...]`).
 - **Instagram has setup gates.** It needs a Business/Creator account and Meta App
   Review, and has no text-only posts (a post must carry an image or video; video
   posts as a Reel). See README.md.

@@ -322,6 +322,15 @@ The trade-off: it depends on X's web UI (a major redesign could require updating
    ```
    The saved file holds live login cookies — treat it like a password and never commit it. (`.gitignore` already excludes `.env`; keep this file in `~/.config/publish-social/` too.)
 
+   **If X rate-limits the automated login** ("We've temporarily limited your login"), skip the login form entirely. Log in to x.com in your normal browser, then import those cookies into the same saved session. X defends its login flow against automation but not an already-valid session, so this sidesteps the block:
+   ```bash
+   # Paste the two cookies that matter (auth_token and ct0). Find them in your
+   # browser's DevTools > Application/Storage > Cookies > https://x.com.
+   uv run x_playwright.py import-session
+   # …or point at a cookies export (Netscape cookies.txt or a JSON array):
+   uv run x_playwright.py import-session --cookies-file ~/Downloads/x.com_cookies.txt
+   ```
+
 3. **Turn on the browser transport.** Either set the default in `.env`:
    ```
    X_TRANSPORT=browser
