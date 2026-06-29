@@ -306,9 +306,9 @@ PYEOF
 
 #### X: free posting via a browser (no API cost)
 
-Instead of the paid API, `x_playwright.py` posts to X by driving a real **logged-in browser** with [Playwright](https://playwright.dev/) — it types the text, attaches one photo or video, and clicks **Post**, exactly as you would by hand. No API keys, no per-post charge, and no link surcharge. It handles **text, URLs, photos, and videos**.
+Instead of the paid API, `x_playwright.py` posts to X by driving a real **logged-in browser** with [Playwright](https://playwright.dev/) — it types the text, attaches one photo or video, and clicks **Post**, exactly as you would by hand. No API keys, no per-post charge, and no link surcharge. It handles **text, URLs, photos, and videos** — all verified end to end, including a 36 MB `.mov`.
 
-The trade-off: it depends on X's web UI (a major redesign could require updating the selectors in `x_playwright.py`), and it needs a one-time interactive login in a real browser window.
+The trade-off: it depends on X's web UI (a major redesign could require updating the selectors in `x_playwright.py`), and it needs a saved login session. The interactive `login` below is the simplest way to create one, but X aggressively rate-limits automated logins ("We've temporarily limited your login"); if you hit that, use `import-session` (step 2) instead, which sidesteps the login form entirely.
 
 1. **Install the browser** (one time). Playwright resolves automatically through `uv`; install its Chromium once:
    ```bash

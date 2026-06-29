@@ -86,7 +86,10 @@ Post text for Mastodon (<= 500 chars).
    - **API available?** X is in the `OFFER:` line of the plain `--check` (API creds present).
    - **Browser available?** X is in the `OFFER:` line of `--check --x-transport browser`
      (a saved session exists). If it is missing, the user can create one with
-     `uv run x_playwright.py login` (a one-time interactive browser sign-in).
+     `uv run x_playwright.py login` (a one-time interactive browser sign-in). If
+     X rate-limits that automated login, fall back to
+     `uv run x_playwright.py import-session` (import cookies from a browser the
+     user is already logged into). Text, photos, and video all post this way.
    - **Only one available** → use it with no question: pass nothing for API (the
      default), or `--x-transport browser` for the browser.
    - **Both available** → ask with AskUserQuestion which to use this run:
