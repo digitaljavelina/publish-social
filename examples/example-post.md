@@ -4,6 +4,12 @@ approved: false
 platforms: [bluesky, mastodon]
 # image: ./media/example.jpg
 # image-alt: "Describe the image for screen readers."
+# To also post a YouTube Short, add a video and uncomment these (YouTube is
+# video-only; a vertical/square clip <=180s auto-qualifies as a Short):
+# video: ./media/clip.mp4
+# video-alt: "Describe the video for screen readers."
+# youtube-title: "Short title shown on YouTube (<=100 chars)"
+# youtube-privacy: public   # public | unlisted | private (default public)
 # To also post to Reddit, add `reddit` to platforms and set a title (the skill
 # asks which subreddit at post time). The ## Reddit block below is the body:
 # reddit-title: "A clear, specific title (<=300 chars)"
@@ -30,6 +36,14 @@ Each platform gets its own block, so you can tune length and tone per network.
 #example
 ```
 
+## YouTube
+
+```
+The video description shown under a YouTube Short. Only used when youtube is in
+the platforms list and the post has a video. The title is the youtube-title
+field above, not this block. #example
+```
+
 ## Reddit
 
 ```
@@ -44,4 +58,5 @@ link/image/video posts.
 |---|---|---|---|---|
 | Bluesky | ☐ | | | |
 | Mastodon | ☐ | | | |
+| YouTube | ☐ | | | |
 | Reddit | ☐ | | | |

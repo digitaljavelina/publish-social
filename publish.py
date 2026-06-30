@@ -14,12 +14,17 @@
 # ///
 """
 publish.py - publish a social post to Bluesky, Mastodon, Threads, LinkedIn, X,
-Instagram, Facebook, and Reddit.
+Instagram, Facebook, YouTube, and Reddit.
 
 Reads a Markdown post file (frontmatter plus one fenced code block per platform),
 optionally attaches one image OR one video (see images.py), publishes to the
 selected platforms, then marks the file posted and fills in its Publish Tracking
 table.
+
+YouTube is the one video-only platform: it publishes the post's `video:` as a
+Short (a vertical/square clip <=180s is auto-classified as one), using
+`youtube-title:` from the frontmatter as the title and the `## YouTube` block as
+the description.
 
 Reddit is the one platform you post to a chosen destination (a subreddit): it
 takes a `reddit-title:` plus a target subreddit (`--subreddit r/...`, asked at
@@ -77,9 +82,10 @@ DEFAULT_POSTS_DIR = Path(
 # X posts via pay-per-use OAuth 1.0a (see the setup guide). It is the only
 # platform that costs money: ~$0.015 per text/image post, ~$0.20 if the post
 # contains a link. Posting an `x` section spends real credits.
-SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "facebook", "reddit")
+SUPPORTED = ("bluesky", "mastodon", "threads", "linkedin", "x", "instagram", "facebook", "youtube", "reddit")
 
 # Instagram requires media (no text-only posts) and posts video as a Reel.
+# YouTube requires a video (it publishes the post's video as a Short).
 # Reddit needs a title and a target subreddit; the `## Reddit` block is the
 # self-post body (optional for link/image/video posts).
 
@@ -92,6 +98,7 @@ DISPLAY = {
     "x": "X",
     "instagram": "Instagram",
     "facebook": "Facebook",
+    "youtube": "YouTube",
     "reddit": "Reddit",
 }
 
@@ -100,12 +107,13 @@ DISPLAY = {
 # Instagram captions allow ~2,200 characters. X's 25,000 reflects an active
 # Premium subscription (the free tier caps at 280); X enforces the real limit
 # server-side, so this only governs the dry-run warning.
-# Reddit's 40,000 governs the `## Reddit` block, which is the self-post BODY;
-# the title is a separate `reddit-title:` field capped at 300 chars (checked in
-# resolve_reddit_settings).
+# YouTube's 5,000 governs the `## YouTube` block (the video DESCRIPTION; the title
+# is a separate `youtube-title:` capped at 100, checked in main). Reddit's 40,000
+# governs the `## Reddit` block (the self-post BODY; the title is a separate
+# `reddit-title:` capped at 300, checked in resolve_reddit_settings).
 CHAR_LIMITS = {
     "bluesky": 300, "mastodon": 500, "threads": 500, "linkedin": 3000,
-    "x": 25_000, "instagram": 2200, "facebook": 63206, "reddit": 40_000,
+    "x": 25_000, "instagram": 2200, "facebook": 63206, "youtube": 5000, "reddit": 40_000,
 }
 
 # Minimum credentials each platform needs before it can be offered or attempted.
@@ -119,14 +127,38 @@ REQUIRED_ENV = {
     "x": ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"),
     "instagram": ("INSTAGRAM_USER_ID", "INSTAGRAM_ACCESS_TOKEN"),
     "facebook": ("FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN"),
+    # YouTube's durable credential is the refresh token (access tokens last ~1h
+    # and are minted from it per run), so that plus the OAuth client is required.
+    "youtube": ("YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN"),
     # Reddit "script" app: app id/secret plus the posting account's username and
     # password (REDDIT_USER_AGENT is optional; a default is supplied).
     "reddit": ("REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_USERNAME", "REDDIT_PASSWORD"),
 }
 
 
+# X has two transports: the paid OAuth API (default), or a free browser-driven
+# path (Playwright) that reuses a logged-in session. Set X_TRANSPORT=browser to
+# post X for free. See x_playwright.py.
+def x_transport() -> str:
+    return os.environ.get("X_TRANSPORT", "api").strip().lower()
+
+
+def _x_browser_state_path() -> Path:
+    """Where x_playwright.py saves the logged-in browser session."""
+    override = os.environ.get("X_PLAYWRIGHT_STATE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "publish-social" / "x-state.json"
+
+
 def platform_configured(platform: str) -> bool:
-    """True only if every credential the platform needs is present (non-empty)."""
+    """True only if everything the platform needs to post is present.
+
+    X in browser mode is "configured" when a saved Playwright session exists,
+    not when the API keys are set - the browser path uses no API credentials.
+    """
+    if platform == "x" and x_transport() == "browser":
+        return _x_browser_state_path().is_file()
     return all(os.environ.get(k) for k in REQUIRED_ENV.get(platform, ()))
 
 
@@ -436,6 +468,45 @@ def _create_linkedin_post(
 
 
 def post_x(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
+    # Route to the free browser path or the paid API path based on X_TRANSPORT.
+    if x_transport() == "browser":
+        return post_x_browser(text, media)
+    return post_x_api(text, media)
+
+
+def post_x_browser(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
+    """Post to X for free by driving a logged-in browser via x_playwright.py.
+
+    Runs the sibling script as its own `uv` process so Playwright (a heavy dep
+    with its own browser binaries) stays isolated from publish.py - it is only
+    installed when this path is actually used. X takes a direct file upload, so
+    photos and videos attach from media.local_path, same as the API path. The
+    script prints the new post's URL on its last stdout line (--print-url).
+    """
+    import subprocess
+
+    script = Path(__file__).resolve().parent / "x_playwright.py"
+    if not script.is_file():
+        raise PublishError(f"x_playwright.py not found next to publish.py ({script}).")
+
+    cmd = ["uv", "run", "--quiet", str(script), "post", "--text", text, "--print-url"]
+    if media is not None:
+        cmd += ["--media", str(media.local_path)]
+
+    env = dict(os.environ)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = detail[-1] if detail else f"exit {proc.returncode}"
+        raise PublishError(f"X (browser) post failed: {msg}")
+
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    if not lines:
+        raise PublishError("X (browser) post produced no URL on stdout.")
+    return lines[-1].strip()
+
+
+def post_x_api(text: str, media: "images.HostedImage | images.HostedVideo | None") -> str:
     # Pay-per-use posting via OAuth 1.0a user context. The four key/secret values
     # are static (minted in the X developer portal) and do not expire, so X needs
     # no refresh machinery. Posting here spends real credits: ~$0.015 for this
@@ -591,6 +662,30 @@ def _reddit_flair_kwargs(subreddit, flair: "str | None") -> dict:
 # Reddit is dispatched separately (see main): it needs the resolved RedditPlan
 # (subreddit, title, kind, flair, url) that the uniform (text, media) signature
 # does not carry.
+def post_youtube(
+    text: str,
+    media: "images.HostedImage | images.HostedVideo | None",
+    *,
+    title: str,
+    privacy: str = "public",
+) -> str:
+    # Publishes the post's video as a YouTube Short via the Data API v3. YouTube
+    # ingests the file directly (like Bluesky/X), so no public media host is used.
+    # `text` is the video description; `title` and `privacy` come from frontmatter
+    # (youtube-title / youtube-privacy). A vertical or square clip <=180s is
+    # auto-classified as a Short; a landscape one posts as a regular video.
+    if not (media and media.kind == "video"):
+        raise PublishError("YouTube requires a video; this post has none.")
+
+    token = youtube_access_token()  # mints a fresh ~1h token from the refresh token
+    video_id = images.upload_youtube_video(
+        token, media.local_path, title=title, description=text, privacy=privacy
+    )
+    return f"https://www.youtube.com/shorts/{video_id}"
+
+
+# YouTube is dispatched separately (see main): it needs the title and privacy from
+# frontmatter, which the uniform (text, media) poster signature does not carry.
 POSTERS = {
     "bluesky": post_bluesky,
     "mastodon": post_mastodon,
@@ -841,6 +936,66 @@ def instagram_access_token() -> str:
 
 
 # --------------------------------------------------------------------------- #
+# YouTube (Google) token. Unlike the 60-day Meta/LinkedIn tokens, a Google access
+# token lasts only ~1 hour, but the refresh token is durable and does NOT rotate
+# on use. So the refresh token is the stored credential, and we mint a short-lived
+# access token from it, caching it in .env until it nears expiry.
+# --------------------------------------------------------------------------- #
+
+
+def refresh_youtube_token() -> str:
+    """Exchange the stored Google refresh token for a fresh ~1h access token."""
+    import time
+
+    import requests
+
+    resp = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": require_env("YOUTUBE_REFRESH_TOKEN"),
+            "client_id": require_env("YOUTUBE_CLIENT_ID"),
+            "client_secret": require_env("YOUTUBE_CLIENT_SECRET"),
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise PublishError(
+            f"YouTube token refresh failed (HTTP {resp.status_code}): {resp.text[:200]}. "
+            "The refresh token is likely expired or revoked (Google expires unused tokens, "
+            "and tokens for an app still in 'testing' mode last only 7 days). Re-authorize in "
+            "the browser to mint a new refresh token (see the YouTube setup guide)."
+        )
+    data = resp.json()
+    access = data["access_token"]
+    expires_in = int(data.get("expires_in", 0))
+    expires_at = int(time.time()) + expires_in
+    update_env_values(
+        {"YOUTUBE_ACCESS_TOKEN": access, "YOUTUBE_TOKEN_EXPIRES_AT": str(expires_at)}
+    )
+    os.environ["YOUTUBE_ACCESS_TOKEN"] = access
+    os.environ["YOUTUBE_TOKEN_EXPIRES_AT"] = str(expires_at)
+    print(f"  YouTube access token refreshed (valid ~{round(expires_in / 60)}m).")
+    return access
+
+
+def youtube_access_token() -> str:
+    """Return a usable Google access token, minting a fresh one from the refresh
+    token when the cached one is missing or within two minutes of expiry.
+
+    The refresh token (not the access token) is the durable credential, so a
+    refresh can always run as long as YOUTUBE_REFRESH_TOKEN is set.
+    """
+    import time
+
+    token = os.environ.get("YOUTUBE_ACCESS_TOKEN", "")
+    exp = os.environ.get("YOUTUBE_TOKEN_EXPIRES_AT", "")
+    if token and exp.isdigit() and time.time() < int(exp) - 120:
+        return token
+    return refresh_youtube_token()
+
+
+# --------------------------------------------------------------------------- #
 # Writing results back into the file
 # --------------------------------------------------------------------------- #
 
@@ -1005,7 +1160,7 @@ def resolve_reddit_settings(args: argparse.Namespace, post: Post, media) -> Redd
 # --------------------------------------------------------------------------- #
 
 
-def resolve_media(post: Post):
+def resolve_media(post: Post, platforms: list[str]):
     has_image = bool(post.frontmatter.get("image"))
     has_video = bool(post.frontmatter.get("video"))
     if has_image and has_video:
@@ -1015,8 +1170,14 @@ def resolve_media(post: Post):
         )
     if not has_image and not has_video:
         return None
+    # Only Threads/Instagram/Facebook fetch media from a public URL; every other
+    # platform uploads the local file directly. So host (rsync) the clip only when
+    # one of those three is a target. A direct-upload-only post (e.g. YouTube,
+    # Bluesky, X) then needs no media host at all - cfg stays None and the prepared
+    # local file is used as-is.
+    needs_host = bool({"threads", "instagram", "facebook"} & set(platforms))
     try:
-        cfg = images.ImageHostConfig.from_env()
+        cfg = images.ImageHostConfig.from_env() if needs_host else None
         if has_video:
             return images.resolve_prepare_and_host_video(post.path, post.frontmatter, cfg)
         return images.resolve_prepare_and_host(post.path, post.frontmatter, cfg)
@@ -1042,6 +1203,35 @@ def choose_platforms(args: argparse.Namespace, post: Post) -> list[str]:
     if not chosen:
         raise PublishError(f"No supported platforms selected (supported: {', '.join(SUPPORTED)}).")
     return chosen
+
+
+def resolve_youtube_settings(post: Post, media) -> tuple[str, str]:
+    """Validate and return (title, privacy) for a YouTube upload.
+
+    YouTube is the one video-only platform: it publishes the post's `video:` as a
+    Short. The title comes from `youtube-title:` (required, <=100 chars, no angle
+    brackets) and privacy from `youtube-privacy:` (public/unlisted/private,
+    default public). Raises PublishError on any problem so it surfaces before
+    anything is posted, including in a dry run.
+    """
+    if not (media and media.kind == "video"):
+        raise PublishError(
+            "YouTube publishes a video as a Short, but this post has no `video:`. "
+            "Add one, or drop youtube from the platforms."
+        )
+    title = str(post.frontmatter.get("youtube-title", "")).strip()
+    if not title:
+        raise PublishError("YouTube needs a `youtube-title:` in the frontmatter (the video title).")
+    if len(title) > 100:
+        raise PublishError(f"youtube-title is {len(title)} chars; YouTube caps titles at 100.")
+    if "<" in title or ">" in title:
+        raise PublishError("youtube-title cannot contain '<' or '>' (YouTube rejects them).")
+    privacy = str(post.frontmatter.get("youtube-privacy", "public")).strip().lower()
+    if privacy not in {"public", "unlisted", "private"}:
+        raise PublishError(
+            f"youtube-privacy must be public, unlisted, or private (got {privacy!r})."
+        )
+    return title, privacy
 
 
 def confirm(platforms: list[str]) -> bool:
@@ -1123,6 +1313,9 @@ def main() -> int:
     parser.add_argument("--check", action="store_true",
                         help="Report which platforms have credentials (and text blocks, with a file) and print an OFFER list. Posts nothing.")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the interactive confirmation.")
+    parser.add_argument("--x-transport", choices=("api", "browser"), dest="x_transport",
+                        help="How to post X for this run: 'api' (paid) or 'browser' (free, via Playwright). "
+                             "Overrides X_TRANSPORT in .env; default is api.")
     parser.add_argument("--subreddit", help="Target subreddit for a Reddit post, e.g. r/test (the skill asks for this).")
     parser.add_argument("--reddit-recent", nargs="?", type=int, const=3, default=None, metavar="N",
                         dest="reddit_recent",
@@ -1130,6 +1323,13 @@ def main() -> int:
     args = parser.parse_args()
 
     load_dotenv(ENV_PATH)
+
+    # A per-run --x-transport flag overrides the env var (precedence:
+    # flag > X_TRANSPORT > default api). Setting it in the environment here means
+    # every x_transport() read - offer logic, dry-run notes, guardrail, the
+    # subprocess that posts via the browser - sees the chosen transport.
+    if args.x_transport:
+        os.environ["X_TRANSPORT"] = args.x_transport
 
     if args.reddit_recent is not None:
         for name in load_reddit_history()[: max(0, args.reddit_recent)]:
@@ -1143,11 +1343,18 @@ def main() -> int:
     post = load_post(path)
     check_gates(post)
     platforms = choose_platforms(args, post)
-    media = resolve_media(post)
+    media = resolve_media(post, platforms)
 
     print(f"File: {path}")
     if media:
-        print(f"{media.kind.capitalize()}: {media.local_path.name} -> {media.public_url}")
+        dest = media.public_url or "(direct upload; no media host needed)"
+        print(f"{media.kind.capitalize()}: {media.local_path.name} -> {dest}")
+
+    # YouTube is video-only and carries a title/privacy from frontmatter; validate
+    # them up front so a misconfigured post fails before anything is posted.
+    yt_title = yt_privacy = None
+    if "youtube" in platforms:
+        yt_title, yt_privacy = resolve_youtube_settings(post, media)
 
     # Reddit needs a subreddit + title and a decided post kind; resolve and
     # validate up front so a misconfigured post fails before anything is posted.
@@ -1183,9 +1390,18 @@ def main() -> int:
                     print(text or "  (no body)")
             else:
                 print(f"{label}\n{text}")
-            if p == "x" and find_link(text):
+            if p == "x" and x_transport() == "browser":
+                print("  note: browser transport -> posts free via a logged-in"
+                      " browser (no API cost, no link surcharge).")
+            elif p == "x" and find_link(text):
                 print("  note: contains a link -> X bills ~$0.20, and a real post"
                       " will require a double confirmation.")
+            if p == "youtube":
+                print(f"  title ({len(yt_title)} chars): {yt_title}")
+                print(f"  privacy: {yt_privacy}")
+                if media and media.kind == "video" and not media.is_vertical:
+                    print("  note: video is landscape; YouTube Shorts want a vertical/square "
+                          "clip <=180s, so this will post as a regular video, not a Short.")
         elif over > 0:
             print(f"  warning: {p} text is over the {CHAR_LIMITS[p]}-char limit by {over}")
         texts[p] = text
@@ -1198,7 +1414,8 @@ def main() -> int:
     # confirmation. A link bills ~$0.20 (vs ~$0.015) and is easy to include by
     # accident. Skipped entirely when X is not a target or its text has no link;
     # runs even under --yes, since a link on X must always be verified by a human.
-    if "x" in platforms:
+    # The browser transport is free, so the cost guardrail does not apply there.
+    if "x" in platforms and x_transport() != "browser":
         x_link = find_link(texts["x"])
         if x_link and not confirm_x_link(x_link):
             print("Skipping X: link not confirmed. Other platforms are unaffected.")
@@ -1211,9 +1428,13 @@ def main() -> int:
         print("Aborted.")
         return 1
 
-    # Reddit needs its resolved plan (subreddit, title, kind, flair, url) that the
-    # uniform poster signature does not carry, so bind it here.
+    # YouTube and Reddit need extra context the uniform poster signature does not
+    # carry (title/privacy, and the resolved RedditPlan), so bind them here.
     posters = dict(POSTERS)
+    if "youtube" in platforms:
+        posters["youtube"] = lambda text, media: post_youtube(
+            text, media, title=yt_title, privacy=yt_privacy
+        )
     if "reddit" in platforms:
         posters["reddit"] = lambda text, media: post_reddit(text, media, plan=reddit_plan)
 
